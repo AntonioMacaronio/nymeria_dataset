@@ -14,7 +14,10 @@ from nymeria.xsens_constants import XSensConstants
 
 def extract_antego_data(
     sequence_folder: Path,      # ex: PosixPath('dataset_nymeria/nymeria_firstdownload/20231211_s1_seth_bowman_act4_9jyykj')
-    frame_rate: float = 30.0
+    frame_rate: float = 30.0,
+    start_frame: int = 0,
+    num_frames: int = 1000,
+    sample_rate: int = 1,
 ) -> List[Tuple[int, np.ndarray, np.ndarray]]:
     """
     Extract root transforms, joint transforms, foot contacts, and egoview RGB image for each frame from a Nymeria sequence in Aria world coordinates.
@@ -22,7 +25,10 @@ def extract_antego_data(
     Args:
         sequence_folder: Path to the sequence folder containing the Nymeria data
         frame_rate: Desired sampling rate in fps (default: 30.0)
-    
+        start_frame: Start frame index (default: 0)
+        num_frames: Number of frames to extract (default: 1000)
+        sample_rate: Sample rate in frames (default: 1) - 1 = every frame, 2 = every other frame, etc.
+
     Returns:
         Dictionary containing the following keys: (timestamp_ns, root_translation, root_orientation, joint_translation, joint_orientation, contact-information, egoview-RGB)
         - timestamp_ns: list of timestamps in nanoseconds
@@ -64,6 +70,7 @@ def extract_antego_data(
     while current_time <= end_time_ns:
         frame_timestamps.append(current_time)
         current_time += frame_interval_ns
+    frame_timestamps = frame_timestamps[start_frame:start_frame+num_frames*sample_rate:sample_rate]
     
     antego_data = {
         'timestamp_ns': [],
