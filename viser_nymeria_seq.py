@@ -9,8 +9,8 @@ from nymeria.xsens_constants import XSensConstants
 import torch
 import torch.nn.functional as F
 
-from pi3.models.pi3 import Pi3
-from pi3.utils.geometry import depth_edge
+# from pi3.models.pi3 import Pi3
+# from pi3.utils.geometry import depth_edge
 
 def main(
     sequence_path: str,
@@ -86,6 +86,26 @@ def main(
         gui_show_bones = server.gui.add_checkbox("Show Bones", True)
         gui_show_root_frame = server.gui.add_checkbox("Show Root Frame", True)
         gui_show_contacts = server.gui.add_checkbox("Show Foot Contacts", True)
+        gui_show_pointcloud = server.gui.add_checkbox("Show Point Cloud", True)
+    
+    # Create static point cloud once (it doesn't change across frames)
+    pointcloud_handle = None
+    if nymeria_dict['pointcloud'] is not None:
+        pointcloud_handle = server.scene.add_point_cloud(
+            "environment/pointcloud",
+            points=nymeria_dict['pointcloud'].astype(np.float32),
+            colors=(0.7, 0.7, 0.7),  # Gray color for environment
+            point_size=0.01,
+            point_shape="circle"
+        )
+    
+    # Store handles for dynamic scene elements
+    dynamic_handles = {
+        'joints': None,
+        'bones': None,
+        'root_frame': None,
+        'contacts': None
+    }
     
     def update_frame_visualization(timestep: int) -> None:
         """Update the 3D visualization for the current timestep."""
@@ -99,20 +119,22 @@ def main(
         root_orientation = nymeria_dict['root_orientation'][timestep]     # Shape (3, 3)
         contact_info = nymeria_dict['contact_information'][timestep]      # Shape (4,)
 
-        # Clear previous frame's scene nodes
-        server.scene.reset()
+        # Clear previous frame's dynamic scene nodes (but keep the static point cloud)
+        for handle in dynamic_handles.values():
+            if handle is not None:
+                handle.remove()
 
         # Render skeleton joints as point cloud
         if gui_show_joints.value:
-            # Prepare joint colors - red for pelvis, green for others
+            # Prepare joint colors - blue for pelvis, green for others
             joint_colors = np.zeros((len(joint_translations), 3))
             for i, joint_name in enumerate(XSensConstants.part_names):
                 if joint_name == "Pelvis":
-                    joint_colors[i] = [0.8, 0.2, 0.2]  # Red for pelvis
+                    joint_colors[i] = [0.2, 0.2, 0.8]  # Blue for pelvis
                 else:
                     joint_colors[i] = [0.2, 0.8, 0.2]  # Green for other joints
 
-            server.scene.add_point_cloud(
+            dynamic_handles['joints'] = server.scene.add_point_cloud(
                 "joints/point_cloud",
                 points=joint_translations.astype(np.float32),
                 colors=joint_colors.astype(np.float32),
@@ -131,7 +153,7 @@ def main(
 
             if bone_points:
                 bone_points = np.array(bone_points) # (N=22, 2, 3)
-                server.scene.add_line_segments(
+                dynamic_handles['bones'] = server.scene.add_line_segments(
                     "skeleton/bones",
                     points=bone_points.astype(float),
                     colors=(0.1, 0.1, 0.8),
@@ -140,7 +162,7 @@ def main(
 
         # Render root coordinate frame
         if gui_show_root_frame.value:
-            server.scene.add_frame(
+            dynamic_handles['root_frame'] = server.scene.add_frame(
                 "root/frame",
                 wxyz=vtf.SO3.from_matrix(root_orientation).wxyz,
                 position=root_translation.astype(float),
@@ -161,12 +183,12 @@ def main(
                     foot_pos = joint_translations[foot_idx]
                     contact_points.append(foot_pos)
 
-                    # Red for contact, gray for no contact
-                    color = [0.8, 0.1, 0.1] if contact_state > 0.5 else [0.3, 0.3, 0.3]
+                    # Red for contact, blue for no contact
+                    color = [0.8, 0.1, 0.1] if contact_state > 0.5 else [0.1, 0.1, 0.8]
                     contact_colors.append(color)
 
             if contact_points:
-                server.scene.add_point_cloud(
+                dynamic_handles['contacts'] = server.scene.add_point_cloud(
                     "contacts/point_cloud",
                     points=np.array(contact_points).astype(np.float32),
                     colors=np.array(contact_colors).astype(np.float32),
@@ -174,7 +196,10 @@ def main(
                     point_shape="diamond"
                 )
 
-        print(f"Updated visualization for frame {timestep} (timestamp: {nymeria_dict['timestamp_ns'][timestep]})")
+        # Toggle point cloud visibility (it was created once at the beginning)
+        if pointcloud_handle is not None:
+            pointcloud_handle.visible = gui_show_pointcloud.value
+        # print(f"Updated visualization for frame {timestep} (timestamp: {nymeria_dict['timestamp_ns'][timestep]})")
 
     # Update visualization when timestep changes
     @gui_timestep.on_update
@@ -196,6 +221,7 @@ def main(
     @gui_show_bones.on_update
     @gui_show_root_frame.on_update
     @gui_show_contacts.on_update
+    @gui_show_pointcloud.on_update
     def _(_) -> None:
         update_frame_visualization(gui_timestep.value)
 

@@ -30,7 +30,7 @@ def extract_antego_data(
         sample_rate: Sample rate in frames (default: 1) - 1 = every frame, 2 = every other frame, etc.
 
     Returns:
-        Dictionary containing the following keys: (timestamp_ns, root_translation, root_orientation, joint_translation, joint_orientation, contact-information, egoview-RGB)
+        Dictionary containing the following keys: (timestamp_ns, root_translation, root_orientation, joint_translation, joint_orientation, contact-information, egoview-RGB, pointcloud)
         - timestamp_ns: list of timestamps in nanoseconds
         - root_translation: list of (3, ) nparray representing root position
         - root_orientation: list of (3, 3) nparray representing root orientation
@@ -38,6 +38,7 @@ def extract_antego_data(
         - joint_orientation: list of (22, 3, 3) nparray representing joint orientations
         - contact_information: list of (4, ) nparray representing foot contact states (4 contact points)
         - egoview_RGB: list of (3, 1408, 1408) nparray representing egoview RGB image
+        - pointcloud: (N, 3) nparray representing global point cloud in world coordinates (static for entire sequence)
     """
     # Initialize data provider
     config = {
@@ -72,6 +73,16 @@ def extract_antego_data(
         current_time += frame_interval_ns
     frame_timestamps = frame_timestamps[start_frame:start_frame+num_frames*sample_rate:sample_rate]
     
+    # Extract global point cloud (static for entire sequence)
+    pointcloud = None
+    if data_provider.recording_head is not None and data_provider.recording_head.has_pointcloud:
+        try:
+            print("Extracting global point cloud...")
+            pointcloud = data_provider.recording_head.get_pointcloud_cached()
+            print(f"Extracted {len(pointcloud)} points")
+        except Exception as e:
+            print(f"Warning: Failed to extract point cloud: {e}")
+
     antego_data = {
         'timestamp_ns': [],
         'root_translation': [],
@@ -80,6 +91,7 @@ def extract_antego_data(
         'joint_orientation': [],
         'contact_information': [],
         'egoview_RGB': [],
+        'pointcloud': pointcloud,  # Static point cloud for entire sequence
     }
     for timestamp_ns in frame_timestamps:
         
