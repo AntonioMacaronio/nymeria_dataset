@@ -141,9 +141,14 @@ def extract_antego_data(
                 ########################################################
                 ####  Extract CPF (Central Pupil Frame) in world coordinates ######
                 ########################################################
-                # CPF is the Aria glasses pose in world coordinates
-                cpf_rotation_matrix = T_Wd_Hd.rotation().to_matrix()    # nparray (3, 3)
-                cpf_translation = T_Wd_Hd.translation().reshape(3)      # nparray (3, )
+                # Get device calibration to get the Device-to-CPF transform
+                device_calib = data_provider.recording_head.vrs_dp.get_device_calibration()
+                T_Device_CPF = device_calib.get_transform_device_cpf()  # sophus.SE3 object - from device to CPF
+
+                # Compute CPF pose in world coordinates: T_World_CPF = T_World_Device @ T_Device_CPF
+                T_Wd_CPF = T_Wd_Hd @ T_Device_CPF
+                cpf_rotation_matrix = T_Wd_CPF.rotation().to_matrix()    # nparray (3, 3)
+                cpf_translation = T_Wd_CPF.translation().reshape(3)      # nparray (3, )
 
                 ########################################################
                 ####  Extract all joint translations and orientations ######
@@ -186,7 +191,7 @@ def extract_antego_data(
                     rgb_image_data = rgb_result[0]  # ImageData object
                     rgb_array = rgb_image_data.to_numpy_array()  # Shape (1408, 1408, 3)
                     rgb_chw = rgb_array.transpose(2, 0, 1)  # Convert to CHW format (3, 1408, 1408)
-                    egoview_rgb = rgb_chw
+                    egoview_rgb = np.rot90(rgb_chw, k=3, axes=(1, 2))  # Rotate 270 degrees clockwise on spatial dimensions (H, W)
                 except Exception as e:
                     print(f"Warning: Failed to extract RGB for timestamp {timestamp_ns}: {e}")
                     egoview_rgb = None

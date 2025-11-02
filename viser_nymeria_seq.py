@@ -88,6 +88,18 @@ def main(
         gui_show_cpf_frame = server.gui.add_checkbox("Show CPF Frame", True)
         gui_show_contacts = server.gui.add_checkbox("Show Foot Contacts", True)
         gui_show_pointcloud = server.gui.add_checkbox("Show Point Cloud", True)
+
+    # Add egocentric view image
+    with server.gui.add_folder("Egocentric View"):
+        # Initial placeholder image (will be updated)
+        initial_img = np.zeros((100, 100, 3), dtype=np.uint8)
+        gui_egoview_image = server.gui.add_image(label="Egoview RGB", image=initial_img, jpeg_quality=80)
+
+    # Add narration displays
+    with server.gui.add_folder("Narrations"):
+        gui_motion_narration = server.gui.add_text("Motion Narration", initial_value="N/A", disabled=True)
+        gui_activity_summarization = server.gui.add_text("Activity Summarization", initial_value="N/A", disabled=True)
+        gui_atomic_action = server.gui.add_text("Atomic Action", initial_value="N/A", disabled=True)
     
     # Create static point cloud once (it doesn't change across frames)
     pointcloud_handle = None
@@ -108,7 +120,52 @@ def main(
         'cpf_frame': None,
         'contacts': None
     }
-    
+
+    def update_egoview_image(timestep: int) -> None:
+        """Update the egocentric view image for the current timestep."""
+        if timestep >= len(nymeria_dict['egoview_RGB']):
+            return
+        egoview_chw = nymeria_dict['egoview_RGB'][timestep] # (3, 1408, 1408)
+        egoview_hwc = egoview_chw.transpose(1, 2, 0)        # (1408, 1408, 3)
+        egoview_hwc = egoview_hwc.astype(np.uint8)
+        gui_egoview_image.image = egoview_hwc
+
+    def update_narrations(timestep: int) -> None:
+        """Update narration text boxes based on the current timestep."""
+        # Update motion narration
+        if nymeria_dict['motion_narration'] is not None:
+            df = nymeria_dict['motion_narration']
+            # Find rows where start_idx <= timestep <= end_idx
+            active_rows = df[(df['start_idx'] <= timestep) & (df['end_idx'] >= timestep)]
+            if len(active_rows) > 0:
+                gui_motion_narration.value = active_rows.iloc[0]['Describe my focus attention']
+            else:
+                gui_motion_narration.value = "N/A"
+        else:
+            gui_motion_narration.value = "No data available"
+
+        # Update activity summarization
+        if nymeria_dict['activity_summarization'] is not None:
+            df = nymeria_dict['activity_summarization']
+            active_rows = df[(df['start_idx'] <= timestep) & (df['end_idx'] >= timestep)]
+            if len(active_rows) > 0:
+                gui_activity_summarization.value = active_rows.iloc[0]['Describe my activity']
+            else:
+                gui_activity_summarization.value = "N/A"
+        else:
+            gui_activity_summarization.value = "No data available"
+
+        # Update atomic action
+        if nymeria_dict['atomic_action'] is not None:
+            df = nymeria_dict['atomic_action']
+            active_rows = df[(df['start_idx'] <= timestep) & (df['end_idx'] >= timestep)]
+            if len(active_rows) > 0:
+                gui_atomic_action.value = active_rows.iloc[0]['Describe my atomic actions']
+            else:
+                gui_atomic_action.value = "N/A"
+        else:
+            gui_atomic_action.value = "No data available"
+
     def update_frame_visualization(timestep: int) -> None:
         """Update the 3D visualization for the current timestep."""
         if timestep >= num_frames:
@@ -220,6 +277,8 @@ def main(
     def _(_) -> None:
         current_timestep = gui_timestep.value
         update_frame_visualization(current_timestep)
+        update_egoview_image(current_timestep)
+        update_narrations(current_timestep)
 
     # Button callbacks
     @gui_next_frame.on_click
@@ -243,6 +302,8 @@ def main(
     # Initialize with first frame
     print(f"Loaded {num_frames} frames. Starting visualization...")
     update_frame_visualization(0)
+    update_egoview_image(0)
+    update_narrations(0)
 
     # Animation loop
     while True:
