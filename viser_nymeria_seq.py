@@ -15,7 +15,7 @@ import torch.nn.functional as F
 def main(
     sequence_path: str,
     start_frame: int = 0,
-    num_frames: int = 2000,
+    num_frames: int = 1000,
     sample_rate: int = 20,
 ):
     # First set up the server and configure the theme + reset camera button
@@ -85,6 +85,7 @@ def main(
         gui_show_joints = server.gui.add_checkbox("Show Joints", True)
         gui_show_bones = server.gui.add_checkbox("Show Bones", True)
         gui_show_root_frame = server.gui.add_checkbox("Show Root Frame", True)
+        gui_show_cpf_frame = server.gui.add_checkbox("Show CPF Frame", True)
         gui_show_contacts = server.gui.add_checkbox("Show Foot Contacts", True)
         gui_show_pointcloud = server.gui.add_checkbox("Show Point Cloud", True)
     
@@ -104,6 +105,7 @@ def main(
         'joints': None,
         'bones': None,
         'root_frame': None,
+        'cpf_frame': None,
         'contacts': None
     }
     
@@ -117,6 +119,8 @@ def main(
         joint_orientations = nymeria_dict['joint_orientation'][timestep]  # Shape (22, 3, 3)
         root_translation = nymeria_dict['root_translation'][timestep]     # Shape (3,)
         root_orientation = nymeria_dict['root_orientation'][timestep]     # Shape (3, 3)
+        cpf_translation = nymeria_dict['cpf_translation'][timestep]       # Shape (3,)
+        cpf_orientation = nymeria_dict['cpf_orientation'][timestep]       # Shape (3, 3)
         contact_info = nymeria_dict['contact_information'][timestep]      # Shape (4,)
 
         # Clear previous frame's dynamic scene nodes (but keep the static point cloud)
@@ -170,6 +174,16 @@ def main(
                 axes_radius=0.005,
             )
 
+        # Render CPF (Central Pupil Frame) coordinate frame
+        if gui_show_cpf_frame.value:
+            dynamic_handles['cpf_frame'] = server.scene.add_frame(
+                "cpf/frame",
+                wxyz=vtf.SO3.from_matrix(cpf_orientation).wxyz,
+                position=cpf_translation.astype(float),
+                axes_length=0.15,
+                axes_radius=0.007,
+            )
+
         # Render foot contacts as point cloud
         if gui_show_contacts.value:
             # Map contacts to foot joint positions
@@ -220,6 +234,7 @@ def main(
     @gui_show_joints.on_update
     @gui_show_bones.on_update
     @gui_show_root_frame.on_update
+    @gui_show_cpf_frame.on_update
     @gui_show_contacts.on_update
     @gui_show_pointcloud.on_update
     def _(_) -> None:
