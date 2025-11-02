@@ -17,7 +17,7 @@ def extract_antego_data(
     sequence_folder: Path,      # ex: PosixPath('dataset_nymeria/nymeria_firstdownload/20231211_s1_seth_bowman_act4_9jyykj')
     frame_rate: float = 30.0,
     start_frame: int = 0,
-    num_frames: int = 1000,
+    num_frames: int = -1,       # If -1, extract all frames in the sequence. Otherwise, extract num_frames frames.
     sample_rate: int = 1,
 ) -> List[Tuple[int, np.ndarray, np.ndarray]]:
     """
@@ -45,7 +45,7 @@ def extract_antego_data(
         - joint_orientation:        list of (22, 3, 3) nparray representing joint orientations
         - contact_information:      list of (4, ) nparray representing foot contact states (4 contact points)
         - egoview_RGB:              list of (3, 1408, 1408) nparray representing egoview RGB image
-        - pointcloud:               (N, 3) nparray representing global point cloud in world coordinates (static for entire sequence)
+        - pointcloud:               (N, 3) nparray representing global point cloud in world coordinates (static for entire sequence), N = 50,000 by default
         - motion_narration:         pandas DataFrame with [start_idx, end_idx, 'Describe my focus attention'] columns or None
                                     NOTE: start_idx and end_idx are the frame indices of the start and end of the narration.
         - activity_summarization:   pandas DataFrame with [start_idx, end_idx, 'Describe my activity'] columns or None
@@ -82,7 +82,10 @@ def extract_antego_data(
     while current_time <= end_time_ns:
         frame_timestamps.append(current_time)
         current_time += frame_interval_ns
-    frame_timestamps = frame_timestamps[start_frame:start_frame+num_frames*sample_rate:sample_rate]
+    if num_frames != -1:
+        frame_timestamps = frame_timestamps[start_frame:start_frame+num_frames*sample_rate:sample_rate]
+    else:
+        frame_timestamps = frame_timestamps[start_frame::sample_rate]
     
     # Extract global point cloud (static for entire sequence)
     pointcloud = None
