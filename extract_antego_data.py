@@ -409,6 +409,19 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
     2. We extract the data for each atomic action by iterating through the frame timestamps and extracting the data for each frame.
     3. We save the data for each atomic action to a separate hdf5 file.
     4. We return a list of the hdf5 file paths in sorted alphabetically order.
+    
+    Each hdf5 file is a datapoint with the following structure:
+    <sequence_name>_<datapoint_id>.h5
+    ├── attributes: sequence_name, start_idx, end_idx, atomic_action, num_frames
+    ├── timestamp_ns:           (N, ) array
+    ├── root_translation:       (N, 3) array
+    ├── root_orientation:       (N, 3, 3) array
+    ├── cpf_translation:        (N, 3) array
+    ├── cpf_orientation:        (N, 3, 3) array
+    ├── joint_translation:      (N, 22, 3) array
+    ├── joint_orientation:      (N, 22, 3, 3) array
+    ├── contact_information:    (N, 4) array
+    └── egoview_RGB:            (N, 3, 1408, 1408) array
     """
     sequence_name = sequence_folder.name
     # Initialize data provider

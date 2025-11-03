@@ -173,7 +173,7 @@ def main(args: DownloadUploadArgs) -> None:
     print(f"Found {len(keys)} sequences to process.")
     print(f"Temp directory: {out_dir}")
     print(f"S3 destination: {s3_prefix}")
-    print(f"Extraction params: {args.num_frames if args.num_frames != -1 else 'all'} frames @ {args.frame_rate}fps, sample_rate={args.sample_rate}\n")
+    print(f"Extraction params: all datapoints @ {args.frame_rate}fps\n")
 
     for idx, key in enumerate(keys, start=1):
         local_seq_dir = os.path.join(out_dir, key)                  # Ex: '/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq'
