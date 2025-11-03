@@ -8,7 +8,7 @@ from dataclasses import dataclass
 import tyro
 import h5py
 import numpy as np
-from extract_antego_data import extract_antego_data, antegodict_to_hdf5
+from extract_antego_data import extract_to_hdf5_chunked
 import shutil
 
 
@@ -183,9 +183,6 @@ def main(args: DownloadUploadArgs) -> None:
 
     for idx, key in enumerate(keys, start=1):
         local_seq_dir = os.path.join(out_dir, key)                  # Ex: '/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq'
-        hdf5_filename = f"{key}.h5"                                 # Ex: '20230607_s0_james_johnson_act0_e72nhq.h5'
-        hdf5_path = os.path.join(out_dir, hdf5_filename)            # Ex: '/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq.h5'
-        s3_hdf5_path = f"{s3_prefix.rstrip('/')}/{hdf5_filename}"   # Ex: 's3://far-research-internal/antzhan/nymeria/hdf5/20230607_s0_james_johnson_act0_e72nhq.h5'
 
         print(f"\n{'='*80}")
         print(f"[{idx}/{len(keys)}] Processing: {key}")
@@ -194,7 +191,7 @@ def main(args: DownloadUploadArgs) -> None:
         ########################################################
         ####  Step 1: Download sequence  ######
         ########################################################
-        print(f"[{idx}/{len(keys)}] Step 1/5: Downloading sequence...")
+        print(f"[{idx}/{len(keys)}] Step 1/4: Downloading sequence...")
         try:
             run_download(url_json_path, out_dir, key)
         except subprocess.CalledProcessError as e:
@@ -211,18 +208,16 @@ def main(args: DownloadUploadArgs) -> None:
             continue
 
         ########################################################
-        ####  Step 2: Extract data using extract_antego_data  ######
+        ####  Step 2: Process sequence into hdf5 files  ######
         ########################################################
-        print(f"[{idx}/{len(keys)}] Step 2/5: Extracting data with extract_antego_data()...")
+        print(f"[{idx}/{len(keys)}] Step 2/4: Processing sequence into hdf5 files (each file is a datapoint)...")
         try:
-            extracted_data = extract_antego_data(
+            hdf5_file_paths = extract_to_hdf5_chunked(
                 sequence_folder=Path(local_seq_dir),
+                output_dir=out_dir,
                 frame_rate=args.frame_rate,
-                start_frame=args.start_frame,
-                num_frames=args.num_frames,
-                sample_rate=args.sample_rate
             )
-            print(f"✓ Extracted {len(extracted_data.get('timestamp_ns', []))} frames")
+            print(f"✓ Processed sequence into {len(hdf5_file_paths)} hdf5 files")
         except Exception as e:
             print(f"❌ Extraction failed for {key}: {e}")
             # Clean up downloaded sequence
@@ -231,40 +226,22 @@ def main(args: DownloadUploadArgs) -> None:
             continue
 
         ########################################################
-        ####  Step 3: Save to HDF5  ######
+        ####  Step 3: Upload HDF5 files to S3  ######
         ########################################################
-        print(f"[{idx}/{len(keys)}] Step 3/5: Processing data to HDF5 format and saving the HDF5 file...")
-        try:
-            antegodict_to_hdf5(extracted_data, hdf5_path)
-        except Exception as e:
-            print(f"❌ HDF5 save failed for {key}: {e}")
-            # Clean up
-            if os.path.isdir(local_seq_dir):
-                shutil.rmtree(local_seq_dir)
-            if os.path.exists(hdf5_path):
-                os.remove(hdf5_path)
-            continue
+        print(f"[{idx}/{len(keys)}] Step 3/4: Uploading HDF5 files to S3...")
+        for hdf5_path in hdf5_file_paths:
+            s3_hdf5_path = f"{s3_prefix.rstrip('/')}/{Path(hdf5_path).name}"
+            try:
+                run_s3_upload_file(hdf5_path, s3_hdf5_path, aws_profile, aws_region)
+                print(f"✓ Uploaded to {s3_hdf5_path}")
+            except subprocess.CalledProcessError as e:
+                print(f"❌ S3 upload failed for {key}: {e}")
+                continue
 
         ########################################################
-        ####  Step 4: Upload HDF5 to S3  ######
+        ####  Step 4: Clean up local files  ######
         ########################################################
-        print(f"[{idx}/{len(keys)}] Step 4/5: Uploading HDF5 to S3...")
-        try:
-            run_s3_upload_file(hdf5_path, s3_hdf5_path, aws_profile, aws_region)
-            print(f"✓ Uploaded to {s3_hdf5_path}")
-        except subprocess.CalledProcessError as e:
-            print(f"❌ S3 upload failed for {key}: {e}")
-            # Clean up
-            if os.path.isdir(local_seq_dir):
-                shutil.rmtree(local_seq_dir)
-            if os.path.exists(hdf5_path):
-                os.remove(hdf5_path)
-            continue
-
-        ########################################################
-        ####  Step 5: Clean up local files  ######
-        ########################################################
-        print(f"[{idx}/{len(keys)}] Step 5/5: Cleaning up local files...")
+        print(f"[{idx}/{len(keys)}] Step 4/4: Cleaning up local files...")
         try:
             if os.path.isdir(local_seq_dir):
                 shutil.rmtree(local_seq_dir)
@@ -274,6 +251,8 @@ def main(args: DownloadUploadArgs) -> None:
                 print(f"✓ Deleted HDF5 file: {hdf5_path}")
         except Exception as e:
             print(f"⚠️  Cleanup warning for {key}: {e}")
+        # also delete data_summary.json and download_summary.json if they exist
+        
 
         print(f"✅ [{idx}/{len(keys)}] Successfully processed: {key}")
 
