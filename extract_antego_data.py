@@ -334,7 +334,7 @@ def antegodict_to_hdf5(antego_data: Dict[str, Any], output_path: str) -> None:
             atomic_action_text = str(atomic_action_df.iloc[i][text_column])
 
             # Create group for this datapoint and store metadata 
-            datapoint_grp = f.create_group(f'datapoint_{i}')
+            datapoint_grp = f.create_group(f'datapoint_{i:05d}')
             datapoint_grp.attrs['start_idx'] = start_idx
             datapoint_grp.attrs['end_idx'] = end_idx
             datapoint_grp.attrs['atomic_action'] = atomic_action_text
@@ -474,9 +474,10 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
         atomic_action_text = str(atomic_action_df.iloc[i]["Describe my atomic actions"])
 
         # Create a new hdf5 file for this atomic action
-        hdf5_path = Path(output_dir) / f"{sequence_name}_{i}.h5"
+        hdf5_path = Path(output_dir) / f"{sequence_name}_{i:05d}.h5"
         with h5py.File(hdf5_path, 'w') as f:
             # Store metadata
+            f.attrs['sequence_name'] = sequence_name
             f.attrs['start_idx'] = start_idx
             f.attrs['end_idx'] = end_idx
             f.attrs['atomic_action'] = atomic_action_text

@@ -39,7 +39,7 @@ def load_first_n_sequence_keys(url_json_path: str, limit: int, only_with_narrati
         # NOTE: There are 1100 total sequences in the dataset, but only 864 of them have language annotations.
         keys = sorted(sequences.keys()) # keys is a length 1100 list of sequence names: ['20230607_s0_james_johnson_act0_e72nhq', '20230607_s0_james_johnson_act1_7xwm28', ...]
 
-    return keys[:limit]
+    return keys if limit == -1 else                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            keys[:limit]
 
 
 def run_download(url_json_path: str, output_dir: str, sequence_key: str) -> None:
@@ -151,17 +151,11 @@ class DownloadUploadArgs:
     frame_rate: float = 30.0
     """Frame rate for extraction (fps)"""
 
-    start_frame: int = 0
-    """Start frame index"""
-
-    num_frames: int = -1
-    """Number of frames to extract per sequence. If -1, extract all frames in the sequence."""
-
-    sample_rate: int = 1
-    """Sample rate (1 = every frame, 2 = every other frame, etc.)"""
-
 
 def main(args: DownloadUploadArgs) -> None:
+    """This script downloads a sequence from the Nymeria dataset, processes it into hdf5 files, and uploads the hdf5 files to S3.
+    It then cleans up the local files. It processes one sequence at a time and each sequnce can have many hdf5 files (datapoints).
+    """
     url_json_path = os.path.abspath(args.url_json)      # "/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/Nymeria_download_urls.json"
     out_dir = os.path.abspath(args.out_dir)             # "/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/temp-upload-folder"
     s3_prefix = args.s3_prefix                          # "s3://far-research-internal/antzhan/nymeria/hdf5"
@@ -246,13 +240,21 @@ def main(args: DownloadUploadArgs) -> None:
             if os.path.isdir(local_seq_dir):
                 shutil.rmtree(local_seq_dir)
                 print(f"✓ Deleted sequence directory: {local_seq_dir}")
-            if os.path.exists(hdf5_path):
-                os.remove(hdf5_path)
-                print(f"✓ Deleted HDF5 file: {hdf5_path}")
+            for hdf5_path in hdf5_file_paths:
+                if os.path.exists(hdf5_path):
+                    os.remove(hdf5_path)
+                    print(f"✓ Deleted HDF5 file: {hdf5_path}")
         except Exception as e:
             print(f"⚠️  Cleanup warning for {key}: {e}")
         # also delete data_summary.json and download_summary.json if they exist
-        
+        data_summary_path = os.path.join(out_dir, 'data_summary.json')
+        download_summary_path = os.path.join(out_dir, 'download_summary.json')
+        if os.path.exists(data_summary_path):
+            os.remove(data_summary_path)
+            print(f"✓ Deleted data_summary.json: {data_summary_path} in {out_dir}")
+        if os.path.exists(download_summary_path):
+            os.remove(download_summary_path)
+            print(f"✓ Deleted download_summary.json: {download_summary_path} in {out_dir}")
 
         print(f"✅ [{idx}/{len(keys)}] Successfully processed: {key}")
 
