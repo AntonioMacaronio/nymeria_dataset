@@ -3,8 +3,10 @@
 Extract root orientation and translation from Nymeria dataset sequences.
 """
 
+import os
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict, Any
+import h5py
 import numpy as np
 import pandas as pd
 from projectaria_tools.core.sophus import SE3
@@ -27,7 +29,7 @@ def extract_antego_data(
         sequence_folder: Path to the sequence folder containing the Nymeria data
         frame_rate: Desired sampling rate in fps (default: 30.0)
         start_frame: Start frame index (default: 0)
-        num_frames: Number of frames to extract (default: 1000)
+        num_frames: Number of frames to extract (default: -1 for all frames)
         sample_rate: Sample rate in frames (default: 1) - 1 = every frame, 2 = every other frame, etc.
             - Note: sample_rate will multiply the "universe time speed" of our sequence,
             - Ex: If we have 1000 frames at 30 fps and sample_rate == 2, 
@@ -255,6 +257,137 @@ def extract_antego_data(
 
     return antego_data
 
+
+def antegodict_to_hdf5(antego_data: Dict[str, Any], output_path: str) -> None:
+    """
+    Convert antego_data dictionary to HDF5 file with further processing and saves it to the specified `output_path`.
+
+    Args:
+        antego_data: Dictionary containing the extracted data from extract_antego_data()
+        output_path: Path to the output HDF5 file
+    Returns:
+        None
+
+    This function will examine the atomic_action DataFrame to form datapoints. Each atomic action is a datapoint!
+    1. Each datapoint will be a dictionary with the following keys (each key is associated with a single atomic action):
+        - start_idx:                int representing the start frame index of the atomic action
+        - end_idx:                  int representing the end frame index of the atomic action
+        - atomic_action:            string representing the atomic action
+        - timestamp_ns:             list of timestamps in nanoseconds associated with the atomic action
+        - root_translation:         list of (3, ) nparray representing root position
+        - root_orientation:         list of (3, 3) nparray representing root orientation
+        - cpf_translation:          list of (3, ) nparray representing central pupil frame (CPF) position
+        - cpf_orientation:          list of (3, 3) nparray representing central pupil frame (CPF) orientation
+        - joint_translation:        list of (22, 3) nparray representing joint positions
+        - joint_orientation:        list of (22, 3, 3) nparray representing joint orientations
+        - contact_information:      list of (4, ) nparray representing foot contact states (4 contact points)
+        - egoview_RGB:              list of (3, 1408, 1408) nparray representing egoview RGB image
+        - pointcloud:               (N, 3) nparray representing global point cloud in world coordinates (static for entire sequence), N = 50,000 by default
+       We find what frame indices in the sequence correspond to the atomic action by examining the atomic_action DataFrame of the antego_data dictionary.
+       The atomic action dataframe has two columns: 'start_idx' and 'end_idx'. We can use these to find the frame indices in the sequence.
+    
+    2. A final super dictionary has (k, v) = (datapoint_id, datapoint_dictionary):
+        - datapoint_id is an integer representing the datapoint id (ex: the 1st atomic action has datapoint_id = 0, the 2nd atomic action has datapoint_id = 1, etc.)
+        - datapoint_dictionary is a dictionary with the keys defined in step 1.
+    
+    3. The HDF5 file will have the following structure:
+    
+    <sequence_name>.h5
+    ├── attributes: num_datapoints, pointcloud_shape
+    ├── datapoint_0/
+    │   ├── attributes: start_idx, end_idx, atomic_action, num_frames
+    │   ├── timestamp_ns:           (N, ) array
+    │   ├── root_translation:       (N, 3) array
+    │   ├── root_orientation:       (N, 3, 3) array
+    │   ├── cpf_translation:        (N, 3) array
+    │   ├── cpf_orientation:        (N, 3, 3) array
+    │   ├── joint_translation:      (N, 22, 3) array
+    │   ├── joint_orientation:      (N, 22, 3, 3) array
+    │   ├── contact_information:    (N, 4) array
+    │   ├── egoview_RGB:            (N, 3, 1408, 1408) array
+    │   └── pointcloud:             (M, 3) array (static for sequence)
+    ├── datapoint_1/
+    │   └── ... (same structure)
+    """
+
+    # Check if atomic_action DataFrame exists
+    if antego_data.get('atomic_action') is None:
+        raise ValueError("atomic_action DataFrame not found in antego_data")
+
+    atomic_action_df = antego_data['atomic_action']
+    num_datapoints = len(atomic_action_df)
+
+    # Get the text column name (should be 'Describe my atomic actions')
+    text_column = [col for col in atomic_action_df.columns if 'atomic' in col.lower() and col not in ['start_idx', 'end_idx']][0]
+
+    print(f"Creating HDF5 file with {num_datapoints} datapoints from atomic actions...")
+
+    with h5py.File(output_path, 'w') as f:
+        # Store metadata
+        f.attrs['num_datapoints'] = num_datapoints
+        f.attrs['pointcloud_shape'] = str(antego_data['pointcloud'].shape) if antego_data.get('pointcloud') is not None else 'None'
+
+        # Create a group for each datapoint
+        for i in range(num_datapoints):
+            start_idx = int(atomic_action_df.iloc[i]['start_idx'])
+            end_idx = int(atomic_action_df.iloc[i]['end_idx'])
+            atomic_action_text = str(atomic_action_df.iloc[i][text_column])
+
+            # Create group for this datapoint and store metadata 
+            datapoint_grp = f.create_group(f'datapoint_{i}')
+            datapoint_grp.attrs['start_idx'] = start_idx
+            datapoint_grp.attrs['end_idx'] = end_idx
+            datapoint_grp.attrs['atomic_action'] = atomic_action_text
+            datapoint_grp.attrs['num_frames'] = end_idx - start_idx + 1
+
+            # Extract and store data for frames in this atomic action
+            # All lists are sliced from start_idx to end_idx+1 (inclusive)
+            datapoint_grp.create_dataset('timestamp_ns',
+                                        data=np.array(antego_data['timestamp_ns'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('root_translation',
+                                        data=np.array(antego_data['root_translation'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('root_orientation',
+                                        data=np.array(antego_data['root_orientation'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('cpf_translation',
+                                        data=np.array(antego_data['cpf_translation'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('cpf_orientation',
+                                        data=np.array(antego_data['cpf_orientation'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('joint_translation',
+                                        data=np.array(antego_data['joint_translation'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('joint_orientation',
+                                        data=np.array(antego_data['joint_orientation'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('contact_information',
+                                        data=np.array(antego_data['contact_information'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            datapoint_grp.create_dataset('egoview_RGB',
+                                        data=np.array(antego_data['egoview_RGB'][start_idx:end_idx+1]),
+                                        compression='gzip', compression_opts=4)
+
+            # Store pointcloud once per datapoint (it's static for entire sequence, but include it for convenience)
+            if antego_data.get('pointcloud') is not None:
+                datapoint_grp.create_dataset('pointcloud',
+                                            data=antego_data['pointcloud'],
+                                            compression='gzip', compression_opts=4)
+
+            if i % 10 == 0 or i == num_datapoints - 1:
+                print(f"  Processed datapoint {i+1}/{num_datapoints} (frames {start_idx}-{end_idx}, action: '{atomic_action_text[:50]}...')")
+
+    print(f"✓ Saved HDF5 file: {output_path} ({os.path.getsize(output_path) / 1e6:.2f} MB)")
 
 # Example usage
 if __name__ == "__main__":
