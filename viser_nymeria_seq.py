@@ -213,7 +213,7 @@ def main(
                     bone_points.append([parent_pos, child_pos])
 
             if bone_points:
-                bone_points = np.array(bone_points) # (N=22, 2, 3)
+                bone_points = np.array(bone_points) # (N=23, 2, 3)
                 dynamic_handles['bones'] = server.scene.add_line_segments(
                     "skeleton/bones",
                     points=bone_points.astype(float),
