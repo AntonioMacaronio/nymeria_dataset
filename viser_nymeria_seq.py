@@ -172,8 +172,8 @@ def main(
             return
 
         # Get data for current frame
-        joint_translations = nymeria_dict['joint_translation'][timestep]  # Shape (22, 3)
-        joint_orientations = nymeria_dict['joint_orientation'][timestep]  # Shape (22, 3, 3)
+        joint_translations = nymeria_dict['joint_translation'][timestep]  # Shape (23, 3)
+        joint_orientations = nymeria_dict['joint_orientation'][timestep]  # Shape (23, 3, 3)
         root_translation = nymeria_dict['root_translation'][timestep]     # Shape (3,)
         root_orientation = nymeria_dict['root_orientation'][timestep]     # Shape (3, 3)
         cpf_translation = nymeria_dict['cpf_translation'][timestep]       # Shape (3,)

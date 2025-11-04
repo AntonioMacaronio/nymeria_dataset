@@ -43,8 +43,8 @@ def extract_antego_data(
         - root_orientation:         list of (3, 3) nparray representing root orientation
         - cpf_translation:          list of (3, ) nparray representing central pupil frame (CPF) position
         - cpf_orientation:          list of (3, 3) nparray representing central pupil frame (CPF) orientation
-        - joint_translation:        list of (22, 3) nparray representing joint positions
-        - joint_orientation:        list of (22, 3, 3) nparray representing joint orientations
+        - joint_translation:        list of (23, 3) nparray representing joint positions
+        - joint_orientation:        list of (23, 3, 3) nparray representing joint orientations
         - contact_information:      list of (4, ) nparray representing foot contact states (4 contact points)
         - egoview_RGB:              list of (3, 1408, 1408) nparray representing egoview RGB image
         - pointcloud:               (N, 3) nparray representing global point cloud in world coordinates (static for entire sequence), N = 50,000 by default
@@ -180,8 +180,8 @@ def extract_antego_data(
                 translation = T_Wd_Pelvis.translation().reshape(3)      # nparray (3, )
 
                 T_Wd_Px = [T_Wd_Wx @ T_wx_px for T_wx_px in T_Wx_Px]  # Transform all joints to world coordinates
-                joint_translations = np.array([T_wd_px.translation().reshape(3) for T_wd_px in T_Wd_Px])  # Shape (22, 3)
-                joint_orientations = np.array([T_wd_px.rotation().to_matrix() for T_wd_px in T_Wd_Px])  # Shape (22, 3, 3)
+                joint_translations = np.array([T_wd_px.translation().reshape(3) for T_wd_px in T_Wd_Px])    # Shape (23, 3)
+                joint_orientations = np.array([T_wd_px.rotation().to_matrix() for T_wd_px in T_Wd_Px])      # Shape (23, 3, 3)
 
                 ########################################################
                 ####  Extract foot contact information ######
@@ -278,8 +278,8 @@ def antegodict_to_hdf5(antego_data: Dict[str, Any], output_path: str) -> None:
         - root_orientation:         list of (3, 3) nparray representing root orientation
         - cpf_translation:          list of (3, ) nparray representing central pupil frame (CPF) position
         - cpf_orientation:          list of (3, 3) nparray representing central pupil frame (CPF) orientation
-        - joint_translation:        list of (22, 3) nparray representing joint positions
-        - joint_orientation:        list of (22, 3, 3) nparray representing joint orientations
+        - joint_translation:        list of (23, 3) nparray representing joint positions
+        - joint_orientation:        list of (23, 3, 3) nparray representing joint orientations
         - contact_information:      list of (4, ) nparray representing foot contact states (4 contact points)
         - egoview_RGB:              list of (3, 1408, 1408) nparray representing egoview RGB image
         - pointcloud:               (N, 3) nparray representing global point cloud in world coordinates (static for entire sequence), N = 50,000 by default
@@ -301,8 +301,8 @@ def antegodict_to_hdf5(antego_data: Dict[str, Any], output_path: str) -> None:
     │   ├── root_orientation:       (N, 3, 3) array
     │   ├── cpf_translation:        (N, 3) array
     │   ├── cpf_orientation:        (N, 3, 3) array
-    │   ├── joint_translation:      (N, 22, 3) array
-    │   ├── joint_orientation:      (N, 22, 3, 3) array
+    │   ├── joint_translation:      (N, 23, 3) array
+    │   ├── joint_orientation:      (N, 23, 3, 3) array
     │   ├── contact_information:    (N, 4) array
     │   ├── egoview_RGB:            (N, 3, 1408, 1408) array
     │   └── pointcloud:             (M, 3) array (static for sequence)
@@ -418,8 +418,8 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
     ├── root_orientation:       (N, 3, 3) array
     ├── cpf_translation:        (N, 3) array
     ├── cpf_orientation:        (N, 3, 3) array
-    ├── joint_translation:      (N, 22, 3) array
-    ├── joint_orientation:      (N, 22, 3, 3) array
+    ├── joint_translation:      (N, 23, 3) array
+    ├── joint_orientation:      (N, 23, 3, 3) array
     ├── contact_information:    (N, 4) array
     └── egoview_RGB:            (N, 3, 1408, 1408) array
     """
@@ -565,8 +565,8 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
                         translation = T_Wd_Pelvis.translation().reshape(3)      # nparray (3, )
 
                         T_Wd_Px = [T_Wd_Wx @ T_wx_px for T_wx_px in T_Wx_Px]  # Transform all joints to world coordinates
-                        joint_translations = np.array([T_wd_px.translation().reshape(3) for T_wd_px in T_Wd_Px])  # Shape (22, 3)
-                        joint_orientations = np.array([T_wd_px.rotation().to_matrix() for T_wd_px in T_Wd_Px])  # Shape (22, 3, 3)
+                        joint_translations = np.array([T_wd_px.translation().reshape(3) for T_wd_px in T_Wd_Px])    # Shape (23, 3)
+                        joint_orientations = np.array([T_wd_px.rotation().to_matrix() for T_wd_px in T_Wd_Px])      # Shape (23, 3, 3)
 
                         #------ Extract foot contact information ------#
                         contact_info = data_provider.body_dp.xsens_data[XSensConstants.k_foot_contacts][idx]  # Shape (4, ) - foot contact states
