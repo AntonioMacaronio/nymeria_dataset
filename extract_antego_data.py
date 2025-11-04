@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 import h5py
+import hdf5plugin  # For fast LZ4 compression
 import numpy as np
 import pandas as pd
 from projectaria_tools.core.sophus import SE3
@@ -605,16 +606,16 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
             ########################################################
             ####  Step 3: Save the datapoint as an hdf5 file ######
             ########################################################
-            # Save the data to the hdf5 file
-            f.create_dataset('timestamp_ns',data=np.array(timestamp_ns_list), compression='gzip', compression_opts=4)
-            f.create_dataset('root_translation', data=np.array(root_translation_list), compression='gzip', compression_opts=4)
-            f.create_dataset('root_orientation', data=np.array(root_orientation_list), compression='gzip', compression_opts=4)
-            f.create_dataset('cpf_translation', data=np.array(cpf_translation_list), compression='gzip', compression_opts=4)
-            f.create_dataset('cpf_orientation', data=np.array(cpf_orientation_list), compression='gzip', compression_opts=4)
-            f.create_dataset('joint_translation', data=np.array(joint_translation_list),compression='gzip', compression_opts=4)
-            f.create_dataset('joint_orientation', data=np.array(joint_orientation_list),compression='gzip', compression_opts=4)
-            f.create_dataset('contact_information', data=np.array(contact_information_list),compression='gzip', compression_opts=4)
-            f.create_dataset('egoview_RGB', data=np.array(egoview_RGB_list),compression='gzip', compression_opts=4)
+            # Save the data to the hdf5 file with LZ4 compression (3-5x faster decompression than gzip!)
+            f.create_dataset('timestamp_ns', data=np.array(timestamp_ns_list), **hdf5plugin.LZ4())
+            f.create_dataset('root_translation', data=np.array(root_translation_list), **hdf5plugin.LZ4())
+            f.create_dataset('root_orientation', data=np.array(root_orientation_list), **hdf5plugin.LZ4())
+            f.create_dataset('cpf_translation', data=np.array(cpf_translation_list), **hdf5plugin.LZ4())
+            f.create_dataset('cpf_orientation', data=np.array(cpf_orientation_list), **hdf5plugin.LZ4())
+            f.create_dataset('joint_translation', data=np.array(joint_translation_list), **hdf5plugin.LZ4())
+            f.create_dataset('joint_orientation', data=np.array(joint_orientation_list), **hdf5plugin.LZ4())
+            f.create_dataset('contact_information', data=np.array(contact_information_list), **hdf5plugin.LZ4())
+            f.create_dataset('egoview_RGB', data=np.array(egoview_RGB_list), **hdf5plugin.LZ4())
             print(f"Saved HDF5 file: {hdf5_path} ({os.path.getsize(hdf5_path) / 1e6:.2f} MB)")
             hdf5_file_paths.append(hdf5_path)
     hdf5_file_paths.sort()

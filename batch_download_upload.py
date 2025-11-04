@@ -7,6 +7,7 @@ from typing import List, Dict, Any
 from dataclasses import dataclass
 import tyro
 import h5py
+import hdf5plugin  # For fast LZ4 compression
 import numpy as np
 from extract_antego_data import extract_to_hdf5_chunked
 import shutil
@@ -99,11 +100,11 @@ def save_to_hdf5(data: Dict[str, Any], output_path: str) -> None:
             if key in data and data[key] is not None and len(data[key]) > 0:
                 # Convert list of arrays to numpy array
                 arr = np.array(data[key])
-                f.create_dataset(key, data=arr, compression='gzip', compression_opts=4)
+                f.create_dataset(key, data=arr, **hdf5plugin.LZ4())
 
         # Save pointcloud (static for entire sequence)
         if data.get('pointcloud') is not None:
-            f.create_dataset('pointcloud', data=data['pointcloud'], compression='gzip', compression_opts=4)
+            f.create_dataset('pointcloud', data=data['pointcloud'], **hdf5plugin.LZ4())
 
         # Save narration DataFrames as separate groups
         for narration_key in ['motion_narration', 'activity_summarization', 'atomic_action']:
