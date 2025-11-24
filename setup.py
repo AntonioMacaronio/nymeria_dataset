@@ -14,5 +14,14 @@ setup(
     author_email="lingni.ma@meta.com",
     description="The official repo to support the Nymeria dataset",
     python_requires=">=3.10",
-    install_requires=["click", "requests", "tqdm"],
+    install_requires=[
+        "click",
+        "requests",
+        "tqdm",
+        # Dependencies for nymeria_dataloader
+        "h5py",
+        "hdf5plugin",  # For LZ4-compressed HDF5 files
+        "numpy",
+        "torch",
+    ],
 )
