@@ -19,3 +19,4 @@ dependencies:
   - hdf5plugin
   - tyro
   - viser
+  - pandas
