@@ -18,9 +18,12 @@ HDF5 Structure:
 └── egoview_RGB:            (N, 3, 1408, 1408) array
 
 Typical Usage: 
-    1. Create a dataloader with torch.util.data.DataLoader(NymeriaDataset) with batch_size > 1:
-    2. Loop over dataloader
-    3. dataloader will return BatchedNymeriaTrainingSeq objects
+    1. Create a dataloader with torch.util.data.DataLoader(NymeriaDataset) with batch_size > 1
+    2. Use nymeria_collate_fn as the collate function (handles variable-length sequences)
+    3. Loop over dataloader - it will return BatchedNymeriaTrainingSeq objects
+    
+Note: Variable-length sequences are automatically handled by padding (shorter sequences)
+      or trimming (longer sequences) to a specified sequence_length in the collate function.
 """
 
 from pathlib import Path
@@ -322,6 +325,11 @@ class BatchedNymeriaTrainingSeq:
     """
     A class that batches a list of NymeriaTrainingSeq objects into a single object.
     All sequences are padded/trimmed to the same length before batching.
+    
+    Handles variable-length sequences by:
+    - Padding shorter sequences with zeros (padding_mask = 0 for padded frames)
+    - Trimming longer sequences to the target length
+    - Creating a padding_mask to indicate valid (1.0) vs padded (0.0) frames
 
     Optimized version: Pre-allocates arrays and fills them directly to avoid
     expensive np.stack() operations on large arrays.
@@ -353,12 +361,16 @@ class BatchedNymeriaTrainingSeq:
 
         # Fill pre-allocated arrays directly (avoids intermediate copies)
         for i, seq in enumerate(batch):
-            seq_len = min(len(seq), T)  # Actual length to copy (trimmed if needed)
+            # Handle both padding and trimming:
+            # - If len(seq) < T: seq_len = len(seq), copy all frames, rest stays as zeros (padding)
+            # - If len(seq) >= T: seq_len = T, copy only first T frames (trimming)
+            seq_len = min(len(seq), T)
 
-            # Fill padding mask
+            # Mark valid frames in padding mask (1.0 = valid, 0.0 = padded)
             padding_mask_np[i, :seq_len] = 1.0
 
-            # Copy data directly into pre-allocated arrays (no intermediate arrays!)
+            # Copy valid frames into pre-allocated arrays
+            # For sequences shorter than T, remaining frames stay as zeros (padding)
             timestamp_ns_np[i, :seq_len] = seq.timestamp_ns[:seq_len]
             root_translation_np[i, :seq_len] = seq.root_translation[:seq_len]
             root_orientation_np[i, :seq_len] = seq.root_orientation[:seq_len]
@@ -383,11 +395,21 @@ class BatchedNymeriaTrainingSeq:
         self.egoview_RGB = torch.from_numpy(egoview_RGB_np)                    # (B, T, 3, 1408, 1408)
 
 
-def nymeria_collate_fn(batch: list[NymeriaTrainingSeq]) -> BatchedNymeriaTrainingSeq:
+def nymeria_collate_fn(batch: list[NymeriaTrainingSeq], sequence_length: int = 151) -> BatchedNymeriaTrainingSeq:
     """
     Collate a list of NymeriaTrainingSeq objects into a single BatchedNymeriaTrainingSeq object.
+    
+    All sequences are automatically padded (if shorter) or trimmed (if longer) to the specified
+    sequence_length. The padding_mask indicates which frames are valid (1.0) vs padded (0.0).
+    
+    Args:
+        batch: List of NymeriaTrainingSeq objects
+        sequence_length: Target length for all sequences (default: 151)
+    
+    Returns:
+        BatchedNymeriaTrainingSeq with all sequences padded/trimmed to the same length
     """
-    return BatchedNymeriaTrainingSeq(batch)
+    return BatchedNymeriaTrainingSeq(batch, sequence_length=sequence_length)
 
 
 # Example usage
@@ -439,13 +461,15 @@ if __name__ == "__main__":
         dataset = NymeriaDataset(data_dir)
         print(f"Dataset contains {len(dataset)} datapoints\n")
 
-        # Create DataLoader
-        # Note: batch_size=1 because each item is already a full sequence
+        # Create DataLoader with custom collate function
+        # Note: The collate_fn automatically pads/trims all sequences to sequence_length=151
+        # This handles variable-length sequences in the batch
         # Use num_workers=0 for debugging, increase for training
+        sequence_length = 151  # All sequences will be padded/trimmed to this length
         dataloader = DataLoader(
             dataset,
             batch_size=4,
-            collate_fn=nymeria_collate_fn,
+            collate_fn=lambda batch: nymeria_collate_fn(batch, sequence_length=sequence_length),
             shuffle=True,
             num_workers=0,
             pin_memory=True
@@ -466,6 +490,9 @@ if __name__ == "__main__":
             print(f"  End indices:              {batch_seq.end_idx}")
             print(f"  Atomic actions:           {batch_seq.atomic_actions}")
             print(f"  Padding mask shape:       {batch_seq.padding_mask.shape}")
+            # Show valid frames per sequence (demonstrates variable-length handling)
+            valid_frames = batch_seq.padding_mask.sum(dim=1).int().tolist()
+            print(f"  Valid frames per seq:     {valid_frames}")
             print(f"  Timestamp ns shape:       {batch_seq.timestamp_ns.shape}")
             print(f"  Root translation shape:   {batch_seq.root_translation.shape}")
             print(f"  Root orientation shape:   {batch_seq.root_orientation.shape}")
