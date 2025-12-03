@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Tuple, Optional, Dict, Any
 import h5py
 import hdf5plugin  # For fast LZ4 compression
+import cv2
 import numpy as np
 import pandas as pd
 from projectaria_tools.core.sophus import SE3
@@ -391,7 +392,7 @@ def antegodict_to_hdf5(antego_data: Dict[str, Any], output_path: str) -> None:
     print(f"✓ Saved HDF5 file: {output_path} ({os.path.getsize(output_path) / 1e6:.2f} MB)")
 
 
-def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: float = 30.0) -> None:
+def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: float = 30.0, resolution: int = 1408) -> None:
     """This function is a more memory-efficient version of extract_antego_data() and antegodict_to_hdf5() combined.
     Because it does not load the entire sequence (such as all video frames) like extract_antego_data() does, it is memory friendly.
 
@@ -399,6 +400,7 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
         sequence_folder:    Path to the nymeria sequence folder
         output_dir:         Path to the output directory where the hdf5 files will be saved
         frame_rate:         Frame rate for extraction (fps)
+        resolution:         Resolution for extraction (1408 for 1408x1408, will always be square)
     Returns:
         A list of hdf5 file paths in sorted alphabetically order.
 
@@ -422,7 +424,7 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
     ├── joint_translation:      (N, 23, 3) array
     ├── joint_orientation:      (N, 23, 3, 3) array
     ├── contact_information:    (N, 4) array
-    └── egoview_RGB:            (N, 3, 1408, 1408) array
+    └── egoview_RGB:            (N, 3, resolution=1408, resolution=1408) array
     """
     sequence_name = sequence_folder.name
     # Initialize data provider
@@ -577,7 +579,9 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
                             rgb_result = data_provider.recording_head.get_rgb_image(timestamp_ns, time_domain=TimeDomain.TIME_CODE)
                             rgb_image_data = rgb_result[0]  # ImageData object
                             rgb_array = rgb_image_data.to_numpy_array()  # Shape (1408, 1408, 3)
-                            rgb_chw = rgb_array.transpose(2, 0, 1)  # Convert to CHW format (3, 1408, 1408)
+                            if resolution != 1408:
+                                rgb_array = cv2.resize(rgb_array, (resolution, resolution), interpolation=cv2.INTER_AREA)
+                            rgb_chw = rgb_array.transpose(2, 0, 1)  # Convert to CHW format (3, resolution, resolution)
                             egoview_rgb = np.rot90(rgb_chw, k=3, axes=(1, 2))  # Rotate 270 degrees clockwise on spatial dimensions (H, W)
                         except Exception as e:
                             print(f"Warning: Failed to extract RGB for timestamp {timestamp_ns}: {e}")

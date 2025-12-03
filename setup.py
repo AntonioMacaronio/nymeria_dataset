@@ -19,6 +19,8 @@ setup(
         "requests",
         "tqdm",
         # Dependencies for nymeria_dataloader
+        "opencv-python",
+        "pandas",
         "h5py",
         "hdf5plugin",  # For LZ4-compressed HDF5 files
         "numpy",

@@ -152,6 +152,9 @@ class DownloadUploadArgs:
     frame_rate: float = 30.0
     """Frame rate for extraction (fps)"""
 
+    resolution: int = 1408
+    """Resolution for extraction (pixels)"""
+
 
 def main(args: DownloadUploadArgs) -> None:
     """This script downloads a sequence from the Nymeria dataset, processes it into hdf5 files, and uploads the hdf5 files to S3.
@@ -211,6 +214,7 @@ def main(args: DownloadUploadArgs) -> None:
                 sequence_folder=Path(local_seq_dir),
                 output_dir=out_dir,
                 frame_rate=args.frame_rate,
+                resolution=args.resolution,
             )
             print(f"✓ Processed sequence into {len(hdf5_file_paths)} hdf5 files")
         except Exception as e:
