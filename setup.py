@@ -4,6 +4,9 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+
+# This setup.py has been modified to install the nymeria_dataloader module. 
+# It does not do anything else but simply allows utilization of the nymeria_dataloader module in the nymeria package.
 from setuptools import find_packages, setup
 
 setup(
@@ -15,6 +18,7 @@ setup(
     description="The official repo to support the Nymeria dataset",
     python_requires=">=3.10",
     install_requires=[
+        "viser",
         "click",
         "requests",
         "tqdm",
