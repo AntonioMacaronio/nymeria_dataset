@@ -306,11 +306,16 @@ class NymeriaDataset(Dataset):
             raise ValueError(f"Path is not a directory: {self.data_dir}")
 
         # get all hdf5 paths in the directory and sort them lexicographically
-        self.hdf5_paths = sorted(list(self.data_dir.glob(file_pattern)))
-        if len(self.hdf5_paths) == 0:
+        # IMPORTANT: Store as numpy array of strings (not Python list of Path objects)
+        # to avoid memory leaks with DataLoader num_workers > 0 due to copy-on-write behavior.
+        # See: https://github.com/pytorch/pytorch/issues/13246
+        hdf5_paths_list = sorted(list(self.data_dir.glob(file_pattern)))
+        if len(hdf5_paths_list) == 0:
             raise ValueError(
                 f"No HDF5 files found in {self.data_dir} with pattern '{file_pattern}'"
             )
+        # Convert to numpy array of strings to avoid copy-on-write memory leak
+        self.hdf5_paths = np.array([str(p) for p in hdf5_paths_list], dtype=np.str_)
         print(f"NymeriaDataset initialized with {len(self.hdf5_paths)} HDF5 files from {self.data_dir}")
 
     def __len__(self) -> int:
@@ -329,7 +334,8 @@ class NymeriaDataset(Dataset):
         if index < 0 or index >= len(self.hdf5_paths):
             raise IndexError(f"Index {index} out of range [0, {len(self.hdf5_paths)})")
 
-        hdf5_path = self.hdf5_paths[index]
+        # Convert numpy string back to Path (local variable, no memory leak concern)
+        hdf5_path = Path(self.hdf5_paths[index])
 
         # Derive MP4 path from HDF5 path
         # Pattern: <sequence_name>_<datapoint_id>.h5 -> <sequence_name>_<datapoint_id>.mp4
