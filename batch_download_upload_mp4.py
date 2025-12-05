@@ -204,6 +204,11 @@ def main(args: DownloadUploadArgs) -> None:
 
         # Upload MP4 files
         for mp4_path in mp4_file_paths:
+            # Check if MP4 file exists before uploading
+            if not os.path.exists(mp4_path):
+                print(f"⚠️  Skipping upload - MP4 file does not exist: {mp4_path}")
+                continue
+
             s3_mp4_path = f"{s3_prefix.rstrip('/')}/{Path(mp4_path).name}"
             try:
                 run_s3_upload_file(str(mp4_path), s3_mp4_path, aws_profile, aws_region)
