@@ -16,7 +16,7 @@ HDF5 Structure:
 ├── joint_orientation:      (N, 23, 3, 3) array
 └── contact_information:    (N, 4) array
 Note: The egoview_mp4_filename is the filename of the mp4 file that contains the egoview RGB video.
-<sequence_name>_<datapoint_id>.mp4 - decoded using TorchCodec to (N, C, H, W) RGB format
+<sequence_name>_<datapoint_id>.mp4 - decoded using decord to (N, C, H, W) RGB format
 
 Typical Usage: 
     1. Create a dataloader with torch.util.data.DataLoader(NymeriaDataset) with batch_size > 1
@@ -34,7 +34,7 @@ import hdf5plugin  # Required for reading LZ4-compressed HDF5 files
 import numpy as np
 import torch
 from torch.utils.data import Dataset
-from torchcodec.decoders import SimpleVideoDecoder
+from decord import VideoReader, cpu
 
 
 class NymeriaTrainingSeq:
@@ -79,15 +79,14 @@ class NymeriaTrainingSeq:
             self.contact_information: np.ndarray = f['contact_information'][:]  # (N, 4)
             self.egoview_mp4_filename: str = f.attrs.get('egoview_mp4_filename', '')
 
-        # Load the MP4 file into RAM using TorchCodec
-        # TorchCodec returns a tensor of shape (N, C, H, W) in RGB format
+        # Load the MP4 file into RAM using decord
+        # decord returns frames in (N, H, W, C) format, so we transpose to (N, C, H, W)
         mp4_path = Path(mp4_path)
         if not mp4_path.exists():
             raise FileNotFoundError(f"MP4 file not found: {mp4_path}")
-
-        decoder = SimpleVideoDecoder(str(mp4_path))
-        video_tensor = decoder[:]  # Returns tensor of shape (N, C, H, W) in RGB format
-        self.egoview_RGB = video_tensor.numpy()  # Convert to numpy array (N, C, H, W)
+        vr = VideoReader(str(mp4_path), ctx=cpu(0))
+        video_frames = vr[:].asnumpy()  # Returns array of shape (N, H, W, C) in RGB format
+        self.egoview_RGB = np.transpose(video_frames, (0, 3, 1, 2))  # Convert to (N, C, H, W)
 
     @classmethod
     def from_arrays(cls,
