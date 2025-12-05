@@ -1,7 +1,14 @@
+# This environment.yml has been modified to be able to for the following:, process them into hdf5 and mp4 files, and upload them to S3.
+# 1. download Nymeria sequences
+# 2. process Nymeria sequences into hdf5 and mp4 files
+# 3. upload Nymeria sequences to S3
+#
+# IMPORTANT: pymomentum requires PyTorch with CUDA from conda-forge (not from pip)
+# and is only compatible with ezc3d < 1.6 due to ABI changes in ezc3d 1.6+
 name: pymeria
 channels:
-  - defaults
   - conda-forge
+  - defaults
 dependencies:
   - python=3.10
   - numpy
@@ -9,6 +16,9 @@ dependencies:
   - click
   - requests
   - pymomentum>=0.1.33
+  - pytorch=*=cuda*
+  - libtorch=*=cuda*
+  - ezc3d<1.6
   - tqdm
   - pip
   - pip:

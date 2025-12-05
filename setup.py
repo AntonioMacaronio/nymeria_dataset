@@ -5,8 +5,14 @@
 # LICENSE file in the root directory of this source tree.
 
 
-# This setup.py has been modified to install the nymeria_dataloader module. 
+# This setup.py has been modified to install the nymeria_dataloader module.
 # It does not do anything else but simply allows utilization of the nymeria_dataloader module in the nymeria package.
+#
+# NOTE: torch is installed via conda in environment.yml (not here) because pymomentum
+# requires CUDA-enabled PyTorch from conda-forge, which must match the libtorch version.
+
+# If you are using the nymeria_dataloader module, you need to install the nymeria package in whatever environment you are using for which you need the nymeria_dataloader module.
+# For example, If I want to finetune a model on the Nymeria dataset, I would need to install the nymeria package in the environment I am using for finetuning, which should already have torch installed.
 from setuptools import find_packages, setup
 
 setup(
@@ -28,6 +34,6 @@ setup(
         "h5py",
         "hdf5plugin",  # For LZ4-compressed HDF5 files
         "numpy",
-        "torch",
+        # torch is installed via conda (see environment.yml)
     ],
 )
