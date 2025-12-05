@@ -12,7 +12,7 @@
 # requires CUDA-enabled PyTorch from conda-forge, which must match the libtorch version.
 
 # If you are using the nymeria_dataloader module, you need to install the nymeria package in whatever environment you are using for which you need the nymeria_dataloader module.
-# For example, If I want to finetune a model on the Nymeria dataset, I would need to install the nymeria package in the environment I am using for finetuning, which should already have torch installed.
+# For example, If I want to finetune a model on the Nymeria dataset, I would need to install the nymeria package in the environment I am using for finetuning, which should already have torch with CUDA installed.
 from setuptools import find_packages, setup
 
 setup(
@@ -34,6 +34,7 @@ setup(
         "h5py",
         "hdf5plugin",  # For LZ4-compressed HDF5 files
         "numpy",
-        # torch is installed via conda (see environment.yml)
+        "decord", # installed on CPU-only because determining right codec version for GPU-enabled PyTorch is tricky. This may be fast enough
+        # torch w/ CUDA should already be installed if you are using the nymeria package through setup.py
     ],
 )
