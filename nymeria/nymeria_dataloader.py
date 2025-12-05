@@ -6,7 +6,7 @@ This module provides a dataloader that reads Nymeria HDF5 files from S3
 
 HDF5 Structure:
 <sequence_name>_<datapoint_id>.h5
-├── attributes: sequence_name, start_idx, end_idx, atomic_action, num_frames
+├── attributes: sequence_name, start_idx, end_idx, atomic_action, num_frames, egoview_mp4_filename
 ├── timestamp_ns:           (N, ) array
 ├── root_translation:       (N, 3) array
 ├── root_orientation:       (N, 3, 3) array
@@ -14,8 +14,9 @@ HDF5 Structure:
 ├── cpf_orientation:        (N, 3, 3) array
 ├── joint_translation:      (N, 23, 3) array
 ├── joint_orientation:      (N, 23, 3, 3) array
-├── contact_information:    (N, 4) array
-└── egoview_RGB:            (N, 3, 1408, 1408) array
+└── contact_information:    (N, 4) array
+Note: The egoview_mp4_filename is the filename of the mp4 file that contains the egoview RGB video.
+<sequence_name>_<datapoint_id>.mp4 - decoded using TorchCodec to (N, C, H, W) RGB format
 
 Typical Usage: 
     1. Create a dataloader with torch.util.data.DataLoader(NymeriaDataset) with batch_size > 1
@@ -33,6 +34,7 @@ import hdf5plugin  # Required for reading LZ4-compressed HDF5 files
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from torchcodec.decoders import SimpleVideoDecoder
 
 
 class NymeriaTrainingSeq:
@@ -40,12 +42,13 @@ class NymeriaTrainingSeq:
     A class that loads and unpacks a single Nymeria HDF5 datapoint into RAM at initialization.
     """
 
-    def __init__(self, hdf5_path: str | Path):
+    def __init__(self, hdf5_path: str | Path, mp4_path: str | Path):
         """
         Initialize and load the NymeriaTrainingSeq object into memory.
 
         Args:
             hdf5_path: Path to the HDF5 file (can be local or S3-mounted path)
+            mp4_path: Path to the corresponding MP4 file (can be local or S3-mounted path) containing the egoview RGB video.
         Raises:
             FileNotFoundError: If the HDF5 file doesn't exist
             KeyError: If expected datasets are missing from the HDF5 file
@@ -74,7 +77,17 @@ class NymeriaTrainingSeq:
             self.joint_translation: np.ndarray = f['joint_translation'][:]      # (N, 23, 3)
             self.joint_orientation: np.ndarray = f['joint_orientation'][:]      # (N, 23, 3, 3)
             self.contact_information: np.ndarray = f['contact_information'][:]  # (N, 4)
-            self.egoview_RGB: np.ndarray = f['egoview_RGB'][:]                  # (N, 3, 1408, 1408)
+            self.egoview_mp4_filename: str = f.attrs.get('egoview_mp4_filename', '')
+
+        # Load the MP4 file into RAM using TorchCodec
+        # TorchCodec returns a tensor of shape (N, C, H, W) in RGB format
+        mp4_path = Path(mp4_path)
+        if not mp4_path.exists():
+            raise FileNotFoundError(f"MP4 file not found: {mp4_path}")
+
+        decoder = SimpleVideoDecoder(str(mp4_path))
+        video_tensor = decoder[:]  # Returns tensor of shape (N, C, H, W) in RGB format
+        self.egoview_RGB = video_tensor.numpy()  # Convert to numpy array (N, C, H, W)
 
     @classmethod
     def from_arrays(cls,
@@ -318,7 +331,12 @@ class NymeriaDataset(Dataset):
             raise IndexError(f"Index {index} out of range [0, {len(self.hdf5_paths)})")
 
         hdf5_path = self.hdf5_paths[index]
-        return NymeriaTrainingSeq(hdf5_path)
+
+        # Derive MP4 path from HDF5 path
+        # Pattern: <sequence_name>_<datapoint_id>.h5 -> <sequence_name>_<datapoint_id>.mp4
+        mp4_path = hdf5_path.with_suffix('.mp4')
+
+        return NymeriaTrainingSeq(hdf5_path, mp4_path)
     
 
 class BatchedNymeriaTrainingSeq:
@@ -419,10 +437,11 @@ if __name__ == "__main__":
     print("="*80)
     print("Example 1: Load a single HDF5 file with NymeriaTrainingSeq")
     print("="*80)
-    example_path = Path("/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/temp-upload-folder-test/20230607_s0_james_johnson_act0_e72nhq_00000.h5")
+    example_hdf5_path = Path("/home/ubuntu/sky_workdir/nymeria_dataset/temp-test/20230607_s0_james_johnson_act0_e72nhq_00000.h5")
+    example_mp4_path = example_hdf5_path.with_suffix('.mp4')
 
-    if example_path.exists():
-        seq = NymeriaTrainingSeq(example_path)
+    if example_hdf5_path.exists() and example_mp4_path.exists():
+        seq = NymeriaTrainingSeq(example_hdf5_path, example_mp4_path)
         print(seq)
         print(f"\nData shapes:")
         print(f"  timestamp_ns: {seq.timestamp_ns.shape}")
@@ -447,14 +466,15 @@ if __name__ == "__main__":
         print(f"  Padding mask shape: {padding_mask.shape}")
         print(f"  Valid frames: {int(padding_mask.sum())}")
     else:
-        print(f"Example file not found: {example_path}")
+        print(f"Example HDF5 file not found: {example_hdf5_path}")
+        print(f"Example MP4 file not found: {example_mp4_path}")
 
     print("\n" + "="*80)
     print("Example 2: Use NymeriaDataset with PyTorch DataLoader")
     print("="*80)
 
     # Example data directory (adjust to your actual path)
-    data_dir = Path("/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset/temp-upload-folder-test")
+    data_dir = Path("/home/ubuntu/sky_workdir/nymeria_dataset/temp-test")
 
     if data_dir.exists():
         # Create dataset
@@ -468,11 +488,12 @@ if __name__ == "__main__":
         sequence_length = 151  # All sequences will be padded/trimmed to this length
         dataloader = DataLoader(
             dataset,
-            batch_size=4,
+            batch_size=3,
             collate_fn=lambda batch: nymeria_collate_fn(batch, sequence_length=sequence_length),
             shuffle=True,
             num_workers=0,
-            pin_memory=True
+            pin_memory=True,
+            drop_last=True
         )
 
         # Iterate through a few batches
