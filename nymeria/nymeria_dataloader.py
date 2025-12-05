@@ -1,7 +1,7 @@
 """
-Nymeria dataset dataloader for ego-motion generation.
+Nymeria dataset/dataloader for HDF5 files with an mp4 reference.
 
-This module provides a dataloader that reads Nymeria HDF5 files from S3
+This module provides a dataset that reads Nymeria HDF5 files from S3
 (or local paths) and loads them into memory for training.
 
 HDF5 Structure:
