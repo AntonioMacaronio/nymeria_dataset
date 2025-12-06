@@ -42,18 +42,22 @@ class NymeriaTrainingSeq:
     A class that loads and unpacks a single Nymeria HDF5 datapoint into RAM at initialization.
     """
 
-    def __init__(self, hdf5_path: str | Path, mp4_path: str | Path):
+    def __init__(self, hdf5_path: str | Path, mp4_path: str | Path, image_resolution: Optional[int] = None):
         """
         Initialize and load the NymeriaTrainingSeq object into memory.
 
         Args:
             hdf5_path: Path to the HDF5 file (can be local or S3-mounted path)
             mp4_path: Path to the corresponding MP4 file (can be local or S3-mounted path) containing the egoview RGB video.
+            image_resolution: Optional target resolution for video frames. If provided, decord will
+                resize during decode (much faster than decoding full resolution then resizing).
+                If None, frames are decoded at original resolution (1408x1408).
         Raises:
             FileNotFoundError: If the HDF5 file doesn't exist
             KeyError: If expected datasets are missing from the HDF5 file
         """
         self.hdf5_path = Path(hdf5_path)
+        self.image_resolution = image_resolution
 
         # Validate file exists
         if not self.hdf5_path.exists():
@@ -84,7 +88,12 @@ class NymeriaTrainingSeq:
         mp4_path = Path(mp4_path)
         if not mp4_path.exists():
             raise FileNotFoundError(f"MP4 file not found: {mp4_path}")
-        vr = VideoReader(str(mp4_path), ctx=cpu(0))
+
+        # Use decord's built-in resize if image_resolution is specified (4-5x faster)
+        if image_resolution is not None:
+            vr = VideoReader(str(mp4_path), ctx=cpu(0), width=image_resolution, height=image_resolution)
+        else:
+            vr = VideoReader(str(mp4_path), ctx=cpu(0))
         video_frames = vr[:].asnumpy()  # Returns array of shape (N, H, W, C) in RGB format
         self.egoview_RGB = np.transpose(video_frames, (0, 3, 1, 2))  # Convert to (N, C, H, W)
 
@@ -230,10 +239,11 @@ class NymeriaTrainingSeq:
                 np.zeros((num_padding_frames, 4), dtype=self.contact_information.dtype)
             ])
             
-            # For egoview_RGB (N, 3, 1408, 1408) - pad with zeros
+            # For egoview_RGB (N, 3, H, W) - pad with zeros (H, W depend on decode resolution)
+            _, C, H, W = self.egoview_RGB.shape
             padded_egoview_RGB = np.concatenate([
                 self.egoview_RGB,
-                np.zeros((num_padding_frames, 3, 1408, 1408), dtype=self.egoview_RGB.dtype)
+                np.zeros((num_padding_frames, C, H, W), dtype=self.egoview_RGB.dtype)
             ])
             
             # Create new NymeriaTrainingSeq object with padded arrays
@@ -282,6 +292,8 @@ class NymeriaDataset(Dataset):
     Args:
         data_dir: Path to directory containing HDF5 files
         file_pattern: Glob pattern to match HDF5 files (default: "*.h5")
+        image_resolution: Optional target resolution for video frames. If provided, decord will
+            resize during decode (4-5x faster than decoding full resolution then resizing).
 
     Example:
         >>> dataset = NymeriaDataset("/nfs/antzhan/nymeria/hdf5")
@@ -289,17 +301,21 @@ class NymeriaDataset(Dataset):
         >>> seq = dataset[0]  # Loads first HDF5 file into RAM
     """
 
-    def __init__(self, data_dir: str | Path, file_pattern: str = "*.h5"):
+    def __init__(self, data_dir: str | Path, file_pattern: str = "*.h5", image_resolution: Optional[int] = None):
         """
         Initialize the dataset by discovering all HDF5 files.
 
         Args:
             data_dir: Directory containing HDF5 files
             file_pattern: Glob pattern to match files (default: "*.h5")
+            image_resolution: Optional target resolution for video frames. If provided, decord will
+                resize during decode (4-5x faster than decoding full resolution then resizing).
         Raises:
             ValueError: If directory doesn't exist or contains no HDF5 files
         """
         self.data_dir = Path(data_dir)
+        self.image_resolution = image_resolution
+
         if not self.data_dir.exists():
             raise ValueError(f"Data directory not found: {self.data_dir}")
         if not self.data_dir.is_dir():
@@ -341,7 +357,7 @@ class NymeriaDataset(Dataset):
         # Pattern: <sequence_name>_<datapoint_id>.h5 -> <sequence_name>_<datapoint_id>.mp4
         mp4_path = hdf5_path.with_suffix('.mp4')
 
-        return NymeriaTrainingSeq(hdf5_path, mp4_path)
+        return NymeriaTrainingSeq(hdf5_path, mp4_path, image_resolution=self.image_resolution)
     
 
 class BatchedNymeriaTrainingSeq:
@@ -368,6 +384,7 @@ class BatchedNymeriaTrainingSeq:
 
         B = self.batch_size
         T = sequence_length
+        _, C, H, W = batch[0].egoview_RGB.shape # Get image resolution from first sequence in batch
 
         # Pre-allocate numpy arrays with correct shapes (all zeros by default)
         # This avoids creating intermediate lists and stacking
@@ -380,7 +397,7 @@ class BatchedNymeriaTrainingSeq:
         joint_translation_np = np.zeros((B, T, 23, 3), dtype=np.float32)
         joint_orientation_np = np.zeros((B, T, 23, 3, 3), dtype=np.float32)
         contact_information_np = np.zeros((B, T, 4), dtype=np.float32)
-        egoview_RGB_np = np.zeros((B, T, 3, 1408, 1408), dtype=np.uint8)
+        egoview_RGB_np = np.zeros((B, T, C, H, W), dtype=np.uint8)
 
         # Fill pre-allocated arrays directly (avoids intermediate copies)
         for i, seq in enumerate(batch):
