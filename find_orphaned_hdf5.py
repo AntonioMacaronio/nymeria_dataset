@@ -92,7 +92,7 @@ def main():
 
         for h5_file in orphaned_hdf5:
             s3_path = f"{S3_BUCKET_PREFIX.rstrip('/')}/{h5_file}"
-            delete_cmd = f"aws s3 rm {s3_path} --region {AWS_REGION} --profile {AWS_PROFILE}\n"
+            delete_cmd = f"AWS_PROFILE={AWS_PROFILE} aws s3 rm {s3_path} --region {AWS_REGION}\n"
             f.write(delete_cmd)
 
     print(f"\n✓ Wrote {len(orphaned_hdf5)} delete commands to: {OUTPUT_FILE}")
