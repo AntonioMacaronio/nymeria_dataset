@@ -13,6 +13,9 @@ def main(data_dir: str = "/data/nymeria"):
             orphaned_hdf5_files.append(hdf5_file)
     
     print(f"Found {len(orphaned_hdf5_files)} orphaned HDF5 files")
+    if len(orphaned_hdf5_files) == 0:
+        print("No orphaned HDF5 files found")
+        return
     
     print("Would you like to delete the orphaned HDF5 files? (y/n)")
     answer = input()
