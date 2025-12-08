@@ -8,9 +8,10 @@ from dataclasses import dataclass
 import tyro
 from extract_antego_data import extract_to_mp4_chunked
 import shutil
+import re
 
 
-WORKSPACE_ROOT = "/home/ubuntu/sky_workdir/nymeria_dataset"
+WORKSPACE_ROOT = "/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset"
 DEFAULT_URL_JSON = f"{WORKSPACE_ROOT}/Nymeria_download_urls.json"
 DEFAULT_OUT_DIR = f"{WORKSPACE_ROOT}/temp-upload-folder"
 DEFAULT_S3_PREFIX = "s3://far-research-internal/antzhan/nymeria/mp4"
@@ -68,6 +69,44 @@ def run_s3_upload(local_path: str, s3_prefix: str, aws_profile: str, aws_region:
     env = os.environ.copy()
     env["AWS_PROFILE"] = aws_profile
     subprocess.run(cmd, check=True, env=env)
+
+
+def get_existing_sequence_keys_from_s3(s3_prefix: str, aws_profile: str, aws_region: str) -> set:
+    """List all files in S3 bucket and extract unique sequence keys.
+    
+    Files in S3 are named like: {sequence_key}_{chunk_number}.h5 or {sequence_key}_{chunk_number}.mp4
+    For example: 20230607_s0_james_johnson_act0_e72nhq_00000.h5
+    
+    This function extracts the sequence keys by removing the extension and numbered suffix.
+    """
+    
+    cmd = ["aws", "s3", "ls", s3_prefix.rstrip('/') + '/', "--region", aws_region] # ex: AWS_PROFILE=far-compute aws s3 ls s3://far-research-internal/antzhan/nymeria/mp4/ --region us-west-2
+    env = os.environ.copy()
+    env["AWS_PROFILE"] = aws_profile
+    
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, check=True, env=env)
+        lines = result.stdout.strip().split('\n')
+    except subprocess.CalledProcessError:
+        # If the bucket/prefix doesn't exist or is empty, return empty set
+        return set()
+    
+    sequence_keys = set()
+    for line in lines:
+        if not line.strip():
+            continue
+        # S3 ls output format: "2024-01-01 12:00:00    12345 filename.ext"
+        parts = line.split()
+        if len(parts) >= 4:
+            filename = parts[-1]  # Get the filename (last part)
+            # Remove extension (.h5 or .mp4)
+            base_name = re.sub(r'\.(h5|mp4)$', '', filename)
+            # Remove numbered suffix (e.g., _00000, _00001, etc.)
+            sequence_key = re.sub(r'_\d+$', '', base_name)
+            if sequence_key:
+                sequence_keys.add(sequence_key)
+    
+    return sequence_keys
 
 
 def run_s3_upload_file(local_file: str, s3_path: str, aws_profile: str, aws_region: str) -> None:
@@ -141,8 +180,18 @@ def main(args: DownloadUploadArgs) -> None:
     print(f"S3 destination: {s3_prefix}")
     print(f"Extraction params: all datapoints @ {args.frame_rate}fps\n")
 
+    # Get existing sequence keys from S3 to skip already-uploaded sequences
+    print("Checking S3 for existing sequences...")
+    existing_keys = get_existing_sequence_keys_from_s3(s3_prefix, aws_profile, aws_region)
+    print(f"Found {len(existing_keys)} existing sequences in S3.\n")
+
     for idx, key in enumerate(keys, start=1):
         local_seq_dir = os.path.join(out_dir, key)                  # Ex: '/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq'
+        
+        # Skip if the sequence is already in the S3 bucket
+        if key in existing_keys:
+            print(f"[{idx}/{len(keys)}] ⏭️  Skipping (already in S3): {key}")
+            continue
 
         print(f"\n{'='*80}")
         print(f"[{idx}/{len(keys)}] Processing: {key}")
