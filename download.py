@@ -25,14 +25,14 @@ def get_groups(full: bool = False) -> list[DataGroups]:
         DataGroups.body_motion,
         DataGroups.recording_head,
         DataGroups.recording_head_data_data_vrs,
-        DataGroups.recording_lwrist,
-        DataGroups.recording_rwrist,
+        # DataGroups.recording_lwrist,                      # not needed for batch_download_upload_mp4_multithreaded.py
+        # DataGroups.recording_rwrist,                      # not needed for batch_download_upload_mp4_multithreaded.py
         # DataGroups.recording_observer,
-        # DataGroups.recording_observer_data_data_vrs,
-        DataGroups.narration_motion_narration_csv,
+        # DataGroups.recording_observer_data_data_vrs,      # not needed for batch_download_upload_mp4_multithreaded.py
+        # DataGroups.narration_motion_narration_csv,        # not needed for batch_download_upload_mp4_multithreaded.py
         DataGroups.narration_atomic_action_csv,
-        DataGroups.narration_activity_summarization_csv,
-        DataGroups.semidense_observations,
+        # DataGroups.narration_activity_summarization_csv,  # not needed for batch_download_upload_mp4_multithreaded.py
+        # DataGroups.semidense_observations,                # not needed for batch_download_upload_mp4_multithreaded.py
         DataGroups.body_xdata_mvnx,
     ]
 
