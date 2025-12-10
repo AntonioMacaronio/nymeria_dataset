@@ -38,7 +38,7 @@ def load_first_n_sequence_keys(url_json_path: str, limit: int, only_with_narrati
         # NOTE: There are 1100 total sequences in the dataset, but only 864 of them have language annotations.
         keys = sorted(sequences.keys()) # keys is a length 1100 list of sequence names: ['20230607_s0_james_johnson_act0_e72nhq', '20230607_s0_james_johnson_act1_7xwm28', ...]
 
-    return keys if limit == -1 else                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            keys[:limit]
+    return keys if limit == -1 else keys[:limit]                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           keys[:limit]
 
 
 def run_download(url_json_path: str, output_dir: str, sequence_key: str) -> None:
@@ -56,6 +56,7 @@ def run_download(url_json_path: str, output_dir: str, sequence_key: str) -> None
 
 
 def run_s3_upload(local_path: str, s3_prefix: str, aws_profile: str, aws_region: str) -> None:
+    """Upload a directory to S3"""
     cmd = [
         "aws",
         "s3",
@@ -122,6 +123,13 @@ def run_s3_upload_file(local_file: str, s3_path: str, aws_profile: str, aws_regi
     ]
     env = os.environ.copy()
     env["AWS_PROFILE"] = aws_profile
+    
+    # Log the command to a text file
+    cmd_str = f"AWS_PROFILE={aws_profile} {' '.join(cmd)}"
+    log_file = os.path.join(WORKSPACE_ROOT, "batch_mp4_s3_upload_file_commands.txt")
+    with open(log_file, "a") as f:
+        f.write(cmd_str + "\n")
+    
     subprocess.run(cmd, check=True, env=env)
 
 
@@ -182,11 +190,11 @@ def main(args: DownloadUploadArgs) -> None:
 
     # Get existing sequence keys from S3 to skip already-uploaded sequences
     print("Checking S3 for existing sequences...")
-    existing_keys = get_existing_sequence_keys_from_s3(s3_prefix, aws_profile, aws_region)
+    existing_keys = get_existing_sequence_keys_from_s3(s3_prefix, aws_profile, aws_region) # Ex: ['20231201_s1_daniel_wiley_act2_9qypr0', '20231201_s1_daniel_wiley_act3_iqzyly', '20231201_s1_daniel_wiley_act4_jyipqj', ...]
     print(f"Found {len(existing_keys)} existing sequences in S3.\n")
 
-    for idx, key in enumerate(keys, start=1):
-        local_seq_dir = os.path.join(out_dir, key)                  # Ex: '/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq'
+    for idx, key in enumerate(keys, start=1):   # Ex: '20230607_s0_james_johnson_act0_e72nhq'
+        local_seq_dir = os.path.join(out_dir, key)   # Ex: '/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq'
         
         # Skip if the sequence is already in the S3 bucket
         if key in existing_keys:
