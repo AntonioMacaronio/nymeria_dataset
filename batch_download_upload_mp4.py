@@ -69,6 +69,13 @@ def run_s3_upload(local_path: str, s3_prefix: str, aws_profile: str, aws_region:
     ]
     env = os.environ.copy()
     env["AWS_PROFILE"] = aws_profile
+    
+    # Log the command to a text file
+    cmd_str = f"AWS_PROFILE={aws_profile} {' '.join(cmd)}"
+    log_file = os.path.join(WORKSPACE_ROOT, "batch_mp4_s3_upload_directory_commands.txt")
+    with open(log_file, "a") as f:
+        f.write(cmd_str + "\n")
+    
     subprocess.run(cmd, check=True, env=env)
 
 
