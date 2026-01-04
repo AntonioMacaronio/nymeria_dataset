@@ -219,6 +219,7 @@ def processor_thread(
     Takes DownloadedSequence objects from download_queue, processes them into HDF5/MP4 files,
     and puts ProcessedSequence objects into upload_queue (blocks if upload_queue is full) as a ProcessedSequence object.
     """
+    print("[Processor] 🚀 PROCESSOR THREAD STARTED!", flush=True)
     out_dir = os.path.abspath(args.out_dir) # Ex: "/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder"
     processed_count = 0
     
@@ -231,9 +232,9 @@ def processor_thread(
             upload_queue.put(PROCESSING_COMPLETE)
             break
         
-        key = item.key # Ex: "20230607_s0_james_johnson_act0_e72nhq"
-        local_seq_dir = item.local_seq_dir
-        idx = item.idx
+        key = item.key                      # Ex: "20230607_s0_james_johnson_act0_e72nhq"
+        local_seq_dir = item.local_seq_dir  # Ex: "/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq"
+        idx = item.idx                      # Ex: 1
         
         print(f"\n{'='*80}")
         print(f"[Processor] [{idx}/{total_keys}] 🔄 Processing: {key}")
@@ -258,7 +259,7 @@ def processor_thread(
                 mp4_file_paths=mp4_file_paths,
                 idx=idx,
             ))
-            print(f"[Processor] [{idx}/{total_keys}] ✓ Queued for upload: {key}")
+            print(f"[Processor] [{idx}/{total_keys}] ✓ Queued for upload: {key}", flush=True)
             processed_count += 1
             
         except Exception as e:
@@ -363,7 +364,7 @@ def uploader_thread(
             print(f"[Uploader] ✓ Deleted download_summary.json: {download_summary_path}")
 
         uploaded_count += 1
-        print(f"[Uploader] ✅ [{idx}/{total_keys}] Completed: {key}")
+        print(f"[Uploader] ✅ [{idx}/{total_keys}] Completed: {key}", flush=True)
     
     print(f"[Uploader] Finished uploading {uploaded_count} sequences")
 
