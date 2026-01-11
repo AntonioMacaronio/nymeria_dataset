@@ -16,6 +16,9 @@ from projectaria_tools.core.sensor_data import TimeDomain
 from nymeria.data_provider import NymeriaDataProvider
 from nymeria.body_motion_provider import BodyDataProvider
 from nymeria.xsens_constants import XSensConstants
+from multiprocessing import Pool, cpu_count
+from functools import partial
+import traceback
 
 def extract_antego_data(
     sequence_folder: Path,      # ex: PosixPath('dataset_nymeria/nymeria_firstdownload/20231211_s1_seth_bowman_act4_9jyykj')
@@ -626,6 +629,198 @@ def extract_to_hdf5_chunked(sequence_folder: Path, output_dir: str, frame_rate: 
     return hdf5_file_paths
 
 
+def _process_atomic_action_batch(
+    args_tuple: tuple
+) -> List[Path]:
+    """Worker function for multiprocessing - processes a BATCH of atomic actions.
+
+    This function is designed to be called by multiprocessing.Pool. Each worker
+    creates its own NymeriaDataProvider instance ONCE and then processes multiple
+    atomic actions, amortizing the expensive data provider initialization.
+
+    Args:
+        args_tuple: Tuple containing:
+            - sequence_folder_str: String path to sequence folder
+            - output_dir: Output directory path
+            - frame_rate: Frame rate for extraction
+            - resolution: Resolution for extraction
+            - batch_info: List of tuples, each containing:
+                (datapoint_idx, start_idx, end_idx, atomic_action_text)
+            - frame_timestamps: List of all frame timestamps for the sequence
+            - worker_id: ID of this worker (for logging)
+
+    Returns:
+        List of Paths to created HDF5 files (empty list if all failed)
+    """
+    (sequence_folder_str, output_dir, frame_rate, resolution,
+     batch_info, frame_timestamps, worker_id) = args_tuple
+
+    sequence_folder = Path(sequence_folder_str)
+    sequence_name = sequence_folder.name
+    hdf5_paths = []
+
+    try:
+        # Each worker creates its own data provider ONCE for the entire batch
+        print(f"[Worker {worker_id}] Initializing data provider for {len(batch_info)} atomic actions...")
+        config = {
+            'sequence_rootdir': sequence_folder,
+            'load_head': True,
+            'load_body': True,
+            'load_observer': False,
+            'load_wrist': False,
+            'trajectory_sample_fps': frame_rate
+        }
+        data_provider = NymeriaDataProvider(**config)
+
+        if data_provider.body_dp is None:
+            print(f"[Worker {worker_id}] No body motion data found")
+            return []
+
+        print(f"[Worker {worker_id}] Data provider initialized, processing {len(batch_info)} atomic actions...")
+
+        # Process each atomic action in the batch
+        for action_num, (datapoint_idx, start_idx, end_idx, atomic_action_text) in enumerate(batch_info):
+            try:
+                hdf5_path = Path(output_dir) / f"{sequence_name}_{datapoint_idx:05d}.h5"
+
+                with h5py.File(hdf5_path, 'w') as f:
+                    # Store metadata
+                    f.attrs['sequence_name'] = sequence_name
+                    f.attrs['start_idx'] = start_idx
+                    f.attrs['end_idx'] = end_idx
+                    f.attrs['atomic_action'] = atomic_action_text
+                    f.attrs['num_frames'] = end_idx - start_idx + 1
+
+                    # Extract the data for this atomic action
+                    timestamp_ns_list = []
+                    root_translation_list = []
+                    root_orientation_list = []
+                    cpf_translation_list = []
+                    cpf_orientation_list = []
+                    joint_translation_list = []
+                    joint_orientation_list = []
+                    contact_information_list = []
+                    egoview_RGB_list = []
+
+                    for timestamp_ns in frame_timestamps[start_idx:end_idx+1]:
+                        try:
+                            poses = data_provider.get_synced_poses(timestamp_ns)
+
+                            if 'xsens' not in poses:
+                                continue
+
+                            timestamp_us = int(timestamp_ns / 1e3)
+
+                            if data_provider.recording_head is not None and 'recording_head' in poses:
+                                # Extract root transform
+                                head_pose = poses['recording_head']
+                                T_Wd_Hd = head_pose.transform_world_device
+
+                                # Extract CPF
+                                device_calib = data_provider.recording_head.vrs_dp.get_device_calibration()
+                                T_Device_CPF = device_calib.get_transform_device_cpf()
+                                T_Wd_CPF = T_Wd_Hd @ T_Device_CPF
+                                cpf_rotation_matrix = T_Wd_CPF.rotation().to_matrix()
+                                cpf_translation = T_Wd_CPF.translation().reshape(3)
+
+                                # Extract joint transforms
+                                T_Hd_Hx = data_provider.T_Hd_Hx(timestamp_ns)
+                                T_Wd_Hx = T_Wd_Hd @ T_Hd_Hx
+
+                                idx = data_provider.body_dp._BodyDataProvider__get_closest_timestamp_idx(timestamp_us)
+                                q = data_provider.body_dp.xsens_data[XSensConstants.k_part_qWXYZ][idx]
+                                t = data_provider.body_dp.xsens_data[XSensConstants.k_part_tXYZ][idx]
+                                T_Wx_Px = BodyDataProvider.qt_to_se3(q, t)
+
+                                head_idx = XSensConstants.part_names.index("Head")
+                                pelvis_idx = XSensConstants.part_names.index("Pelvis")
+                                T_Wx_Head = T_Wx_Px[head_idx]
+                                T_Hx_Wx = T_Wx_Head.inverse()
+                                T_Wd_Wx = T_Wd_Hx @ T_Hx_Wx
+                                T_Wd_Pelvis = T_Wd_Wx @ T_Wx_Px[pelvis_idx]
+
+                                rotation_matrix = T_Wd_Pelvis.rotation().to_matrix()
+                                translation = T_Wd_Pelvis.translation().reshape(3)
+
+                                T_Wd_Px = [T_Wd_Wx @ T_wx_px for T_wx_px in T_Wx_Px]
+                                joint_translations = np.array([T_wd_px.translation().reshape(3) for T_wd_px in T_Wd_Px])
+                                joint_orientations = np.array([T_wd_px.rotation().to_matrix() for T_wd_px in T_Wd_Px])
+
+                                # Extract foot contact
+                                contact_info = data_provider.body_dp.xsens_data[XSensConstants.k_foot_contacts][idx]
+
+                                # Extract RGB image
+                                try:
+                                    rgb_result = data_provider.recording_head.get_rgb_image(timestamp_ns, time_domain=TimeDomain.TIME_CODE)
+                                    rgb_image_data = rgb_result[0]
+                                    rgb_array = rgb_image_data.to_numpy_array()
+                                    if resolution != 1408:
+                                        rgb_array = cv2.resize(rgb_array, (resolution, resolution), interpolation=cv2.INTER_AREA)
+                                    rgb_chw = rgb_array.transpose(2, 0, 1)
+                                    egoview_rgb = np.rot90(rgb_chw, k=3, axes=(1, 2))
+                                except Exception:
+                                    egoview_rgb = None
+                            else:
+                                continue
+
+                            if egoview_rgb is not None:
+                                timestamp_ns_list.append(timestamp_ns)
+                                root_translation_list.append(translation)
+                                root_orientation_list.append(rotation_matrix)
+                                cpf_translation_list.append(cpf_translation)
+                                cpf_orientation_list.append(cpf_rotation_matrix)
+                                joint_translation_list.append(joint_translations)
+                                joint_orientation_list.append(joint_orientations)
+                                contact_information_list.append(contact_info)
+                                egoview_RGB_list.append(egoview_rgb)
+
+                        except Exception:
+                            continue
+
+                    # Save video as MP4
+                    mp4_path = Path(output_dir) / f"{sequence_name}_{datapoint_idx:05d}.mp4"
+
+                    if len(egoview_RGB_list) > 0:
+                        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                        video_writer = cv2.VideoWriter(str(mp4_path), fourcc, frame_rate, (resolution, resolution))
+
+                        for rgb_frame in egoview_RGB_list:
+                            frame_hwc = rgb_frame.transpose(1, 2, 0)
+                            frame_bgr = cv2.cvtColor(frame_hwc.astype(np.uint8), cv2.COLOR_RGB2BGR)
+                            video_writer.write(frame_bgr)
+
+                        video_writer.release()
+                        print(f"[Worker {worker_id}] ({action_num+1}/{len(batch_info)}) Saved: {mp4_path.name} ({os.path.getsize(mp4_path) / 1e6:.2f} MB)")
+                    else:
+                        print(f"[Worker {worker_id}] ({action_num+1}/{len(batch_info)}) No frames for datapoint {datapoint_idx}")
+                        continue  # Skip this action but continue with others
+
+                    # Save HDF5 data
+                    f.attrs['egoview_mp4_filename'] = mp4_path.name
+                    f.create_dataset('timestamp_ns', data=np.array(timestamp_ns_list), **hdf5plugin.LZ4())
+                    f.create_dataset('root_translation', data=np.array(root_translation_list), **hdf5plugin.LZ4())
+                    f.create_dataset('root_orientation', data=np.array(root_orientation_list), **hdf5plugin.LZ4())
+                    f.create_dataset('cpf_translation', data=np.array(cpf_translation_list), **hdf5plugin.LZ4())
+                    f.create_dataset('cpf_orientation', data=np.array(cpf_orientation_list), **hdf5plugin.LZ4())
+                    f.create_dataset('joint_translation', data=np.array(joint_translation_list), **hdf5plugin.LZ4())
+                    f.create_dataset('joint_orientation', data=np.array(joint_orientation_list), **hdf5plugin.LZ4())
+                    f.create_dataset('contact_information', data=np.array(contact_information_list), **hdf5plugin.LZ4())
+
+                hdf5_paths.append(hdf5_path)
+
+            except Exception as e:
+                print(f"[Worker {worker_id}] Failed on datapoint {datapoint_idx}: {e}")
+                continue  # Continue with other actions in the batch
+
+        print(f"[Worker {worker_id}] Completed {len(hdf5_paths)}/{len(batch_info)} atomic actions")
+        return hdf5_paths
+
+    except Exception as e:
+        print(f"[Worker {worker_id}] Failed to initialize: {e}")
+        traceback.print_exc()
+        return []
+
+
 def extract_to_mp4_chunked(sequence_folder: Path, output_dir: str, frame_rate: float = 30.0, resolution: int = 1408) -> List[Path]:
     """This function takes a chunk of the sequence and extracts the egoview RGB images for that chunk into a single mp4 file.
     Other attributes are also extracted and saved into a hdf5 file. The hdf5 file contains the filename of the mp4 file.
@@ -664,6 +859,11 @@ def extract_to_mp4_chunked(sequence_folder: Path, output_dir: str, frame_rate: f
     Each mp4 file contains the egoview RGB video:
     <sequence_name>_<datapoint_id>.mp4
     """
+    # Check that atomic_action.csv exists before doing expensive initialization
+    atomic_action_path = sequence_folder / 'narration' / 'atomic_action.csv'
+    if not atomic_action_path.exists():
+        raise RuntimeError(f"atomic_action.csv not found at {atomic_action_path}")
+
     sequence_name = sequence_folder.name
     # Initialize data provider
     config = {
@@ -886,6 +1086,163 @@ def extract_to_mp4_chunked(sequence_folder: Path, output_dir: str, frame_rate: f
             f.create_dataset('contact_information', data=np.array(contact_information_list), **hdf5plugin.LZ4())
             print(f"Saved HDF5 file: {hdf5_path} ({os.path.getsize(hdf5_path) / 1e6:.2f} MB)")
             hdf5_file_paths.append(hdf5_path)
+    hdf5_file_paths.sort()
+    return hdf5_file_paths
+
+
+def extract_to_mp4_chunked_multiprocess(
+    sequence_folder: Path,
+    output_dir: str,
+    frame_rate: float = 30.0,
+    resolution: int = 1408,
+    num_workers: int = 4
+) -> List[Path]:
+    """Multiprocessing version of extract_to_mp4_chunked for faster processing.
+
+    This function processes atomic actions in parallel using multiple worker processes.
+    Each worker creates its own NymeriaDataProvider instance to avoid sharing issues.
+
+    Args:
+        sequence_folder:    Path to the nymeria sequence folder
+        output_dir:         Path to the output directory where the hdf5 and mp4 files will be saved
+        frame_rate:         Frame rate for extraction (fps)
+        resolution:         Resolution for extraction (1408 for 1408x1408, will always be square)
+        num_workers:        Number of parallel worker processes (default: 4)
+
+    Returns:
+        A list of hdf5 file paths in sorted alphabetically order.
+
+    Each hdf5 file is a datapoint with the following structure:
+    <sequence_name>_<datapoint_id>.h5
+    ├── attributes: sequence_name, start_idx, end_idx, atomic_action, num_frames, egoview_mp4_filename
+    ├── timestamp_ns:           (N, ) array
+    ├── root_translation:       (N, 3) array
+    ├── root_orientation:       (N, 3, 3) array
+    ├── cpf_translation:        (N, 3) array
+    ├── cpf_orientation:        (N, 3, 3) array
+    ├── joint_translation:      (N, 23, 3) array
+    ├── joint_orientation:      (N, 23, 3, 3) array
+    └── contact_information:    (N, 4) array
+
+    Each mp4 file contains the egoview RGB video:
+    <sequence_name>_<datapoint_id>.mp4
+
+    Performance: Each worker initializes the data provider ONCE and processes
+    all atomic actions in its batch, amortizing the expensive initialization cost.
+    """
+    # Check that atomic_action.csv exists before doing expensive initialization
+    atomic_action_path = sequence_folder / 'narration' / 'atomic_action.csv'
+    if not atomic_action_path.exists():
+        raise RuntimeError(f"atomic_action.csv not found at {atomic_action_path}")
+
+    # Initialize data provider for setup (get frame timestamps and atomic actions)
+    config = {
+        'sequence_rootdir': sequence_folder,
+        'load_head': True,
+        'load_body': True,
+        'load_observer': False,
+        'load_wrist': False,
+        'trajectory_sample_fps': frame_rate
+    }
+
+    try:
+        data_provider = NymeriaDataProvider(**config)
+    except Exception as e:
+        raise RuntimeError(f"Failed to initialize data provider: {e}")
+
+    if data_provider.body_dp is None:
+        raise RuntimeError("No body motion data found in sequence")
+
+    # Get the time span for the sequence
+    timespan_ns = data_provider.timespan_ns
+    start_time_ns, end_time_ns = timespan_ns
+
+    # Calculate frame timestamps based on desired frame rate
+    frame_interval_ns = int(1e9 / frame_rate)
+
+    frame_timestamps = []
+    current_time = start_time_ns
+    while current_time <= end_time_ns:
+        frame_timestamps.append(current_time)
+        current_time += frame_interval_ns
+
+    ########################################################
+    ####  Step 1: Get the atomic actions ######
+    ########################################################
+    atomic_action_df = None
+    if len(frame_timestamps) > 0 and data_provider.recording_head is not None:
+        try:
+            # Convert frame timestamps to device time for narration alignment
+            device_time = []
+            for ts_ns in frame_timestamps:
+                device_time_ns = data_provider.recording_head.vrs_dp.convert_from_timecode_to_device_time_ns(int(ts_ns))
+                device_time.append(device_time_ns)
+            device_time = np.array(device_time)
+
+            # Read the atomic action dataframe
+            atomic_action_df = pd.read_csv(sequence_folder / 'narration' / 'atomic_action.csv', delimiter=',', quotechar='"')
+            atomic_action_df['start_idx'] = atomic_action_df['start_time'].apply(lambda x: np.argmin(np.abs(device_time - x * 1e9)))
+            atomic_action_df['end_idx'] = atomic_action_df['end_time'].apply(lambda x: np.argmin(np.abs(device_time - x * 1e9)))
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to process narration data: {e}")
+
+    if atomic_action_df is None or len(atomic_action_df) == 0:
+        raise RuntimeError("No atomic actions found in sequence")
+
+    num_datapoints = len(atomic_action_df)
+    print(f"[extract_to_mp4_chunked_multiprocess] Processing {num_datapoints} atomic actions with {num_workers} workers")
+
+    ########################################################
+    ####  Step 2: Prepare batches for parallel processing ######
+    ########################################################
+    # Collect all atomic action info
+    all_action_info = []
+    for i in range(num_datapoints):
+        start_idx = int(atomic_action_df.iloc[i]['start_idx'])
+        end_idx = int(atomic_action_df.iloc[i]['end_idx'])
+        atomic_action_text = str(atomic_action_df.iloc[i]["Describe my atomic actions"])
+        all_action_info.append((i, start_idx, end_idx, atomic_action_text))
+
+    # Divide actions into batches (one batch per worker)
+    # This ensures each worker only initializes the data provider once
+    batch_size = (num_datapoints + num_workers - 1) // num_workers  # Ceiling division. Ex: (163 + 4 - 1) // 4 = 41 -> each worker does 41. The last worker does less than 41. 
+    batches = []
+    for worker_id in range(num_workers):
+        start = worker_id * batch_size
+        end = min(start + batch_size, num_datapoints)
+        if start < num_datapoints:
+            batch_info = all_action_info[start:end]
+            batches.append((
+                str(sequence_folder),  # Convert Path to string for pickling
+                output_dir,
+                frame_rate,
+                resolution,
+                batch_info,  # List of (datapoint_idx, start_idx, end_idx, atomic_action_text)
+                frame_timestamps,
+                worker_id,
+            ))
+
+    print(f"[extract_to_mp4_chunked_multiprocess] Split into {len(batches)} batches: {[len(b[4]) for b in batches]} actions each")
+
+    # Close the data_provider before forking to avoid resource issues
+    del data_provider
+
+    ########################################################
+    ####  Step 3: Process batches in parallel using Pool ######
+    ########################################################
+    print(f"[extract_to_mp4_chunked_multiprocess] Starting multiprocessing pool with {len(batches)} workers...")
+
+    with Pool(processes=len(batches)) as pool:
+        results = pool.map(_process_atomic_action_batch, batches)
+
+    # Flatten results (each result is a list of paths)
+    hdf5_file_paths = []
+    for batch_result in results:
+        hdf5_file_paths.extend(batch_result)
+
+    print(f"[extract_to_mp4_chunked_multiprocess] Completed {len(hdf5_file_paths)}/{num_datapoints} atomic actions successfully")
+
     hdf5_file_paths.sort()
     return hdf5_file_paths
 
