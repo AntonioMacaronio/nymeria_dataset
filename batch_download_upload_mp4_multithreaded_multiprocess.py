@@ -14,6 +14,8 @@ import threading
 from queue import Queue
 from multiprocessing import cpu_count
 import filelock
+import logging
+from datetime import datetime
 
 
 WORKSPACE_ROOT = "/home/ANT.AMAZON.COM/antzhan/lab42/src/FAR-nymeria-dataset"
@@ -31,9 +33,56 @@ PROCESSING_COMPLETE = None
 SEQUENCES_TO_SKIP_CSV = f"{WORKSPACE_ROOT}/sequences_to_skip.csv"
 
 
-def load_sequences_to_skip() -> Set[str]:
+def setup_logging() -> logging.Logger:
+    """Set up logging to both file and console with timestamps.
+
+    Returns:
+        Logger instance configured for the pipeline.
+    """
+    # Create logs directory if it doesn't exist
+    log_dir = os.path.join(WORKSPACE_ROOT, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Create timestamped log file
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = os.path.join(log_dir, f"pipeline_{timestamp}.log")
+
+    # Configure logging
+    logger = logging.getLogger("pipeline")
+    logger.setLevel(logging.DEBUG)
+
+    # Remove any existing handlers
+    logger.handlers.clear()
+
+    # File handler (detailed logs)
+    file_handler = logging.FileHandler(log_file)
+    file_handler.setLevel(logging.DEBUG)
+    file_formatter = logging.Formatter(
+        '%(asctime)s - %(threadName)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+    file_handler.setFormatter(file_formatter)
+
+    # Console handler (info and above)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter(
+        '%(asctime)s - %(threadName)s - %(message)s',
+        datefmt='%H:%M:%S'
+    )
+    console_handler.setFormatter(console_formatter)
+
+    logger.addHandler(file_handler)
+    logger.addHandler(console_handler)
+
+    logger.info(f"Logging initialized. Log file: {log_file}")
+
+    return logger
+
+
+def load_sequences_to_skip(logger: Optional[logging.Logger] = None) -> Set[str]:
     """Load sequence keys to skip from the CSV file in SEQUENCES_TO_SKIP_CSV
-    
+
     Returns:
         Set of sequence keys that should be skipped.
     """
@@ -50,17 +99,22 @@ def load_sequences_to_skip() -> Set[str]:
                 if 'sequence_key' in row and row['sequence_key']:
                     sequences.add(row['sequence_key'])
     except Exception as e:
-        print(f"Warning: Could not load sequences_to_skip.csv: {e}")
+        msg = f"Warning: Could not load sequences_to_skip.csv: {e}"
+        if logger:
+            logger.warning(msg)
+        else:
+            print(msg)
 
     return sequences
 
 
-def add_sequence_to_skip(sequence_key: str, reason: str) -> None:
+def add_sequence_to_skip(sequence_key: str, reason: str, logger: Optional[logging.Logger] = None) -> None:
     """Add a failed sequence to the CSV file. Uses file locking to ensure thread-safe writes.
 
     Args:
         sequence_key: The sequence key to add (e.g., "20230607_s0_james_johnson_act0_e72nhq")
         reason: The reason for skipping (e.g., "download failed: HTTP 404")
+        logger: Optional logger instance
     """
     csv_path = SEQUENCES_TO_SKIP_CSV
     lock_path = f"{csv_path}.lock"
@@ -71,9 +125,13 @@ def add_sequence_to_skip(sequence_key: str, reason: str) -> None:
     try:
         with lock:
             # Check if sequence already exists in CSV
-            existing_sequences = load_sequences_to_skip()
+            existing_sequences = load_sequences_to_skip(logger)
             if sequence_key in existing_sequences:
-                print(f"[SkipList] Sequence {sequence_key} already in skip list, not adding again")
+                msg = f"[SkipList] Sequence {sequence_key} already in skip list, not adding again"
+                if logger:
+                    logger.info(msg)
+                else:
+                    print(msg)
                 return
 
             # Check if file exists and has header
@@ -85,11 +143,23 @@ def add_sequence_to_skip(sequence_key: str, reason: str) -> None:
                     writer.writerow(['sequence_key', 'reason'])
                 writer.writerow([sequence_key, reason])
 
-            print(f"[SkipList] Added {sequence_key} to skip list: {reason}")
+            msg = f"[SkipList] Added {sequence_key} to skip list: {reason}"
+            if logger:
+                logger.warning(msg)
+            else:
+                print(msg)
     except filelock.Timeout:
-        print(f"[SkipList] Warning: Could not acquire lock to add {sequence_key} to skip list")
+        msg = f"[SkipList] Warning: Could not acquire lock to add {sequence_key} to skip list"
+        if logger:
+            logger.warning(msg)
+        else:
+            print(msg)
     except Exception as e:
-        print(f"[SkipList] Error adding {sequence_key} to skip list: {e}")
+        msg = f"[SkipList] Error adding {sequence_key} to skip list: {e}"
+        if logger:
+            logger.error(msg)
+        else:
+            print(msg)
 
 @dataclass
 class DownloadedSequence:
@@ -109,7 +179,7 @@ class ProcessedSequence:
     idx: int                        # Ex: 1
 
 
-def load_all_sequence_keys(url_json_path: str, only_with_narrations: bool = True) -> List[str]:
+def load_all_sequence_keys(url_json_path: str, only_with_narrations: bool = True, logger: Optional[logging.Logger] = None) -> List[str]:
     """Load all sequence keys from the JSON file, optionally filtering for those with narrations.
 
     This function also removes sequences with bad data using the sequences_to_skip.csv file.
@@ -126,19 +196,27 @@ def load_all_sequence_keys(url_json_path: str, only_with_narrations: bool = True
             if narration_keys:
                 sequences_with_narrations.append(seq_key)
         keys = sorted(sequences_with_narrations)
-        print(f"Filtered to {len(keys)} sequences with language annotations (out of {len(sequences)} total)")
+        msg = f"Filtered to {len(keys)} sequences with language annotations (out of {len(sequences)} total)"
+        if logger:
+            logger.info(msg)
+        else:
+            print(msg)
     else:
         # If not filtering for sequences with language annotations, return all sequences
         # NOTE: There are 1100 total sequences in the dataset, but only 864 of them have language annotations.
         keys = sorted(sequences.keys()) # keys is a length 1100 list of sequence names: ['20230607_s0_james_johnson_act0_e72nhq', '20230607_s0_james_johnson_act1_7xwm28', ...]
 
     # remove keys with bad data (loaded from CSV file)
-    sequences_to_skip = load_sequences_to_skip()
+    sequences_to_skip = load_sequences_to_skip(logger)
     original_count = len(keys)
     keys = [k for k in keys if k not in sequences_to_skip]
     skipped_count = original_count - len(keys)
     if skipped_count > 0:
-        print(f"Skipped {skipped_count} sequences from skip list (sequences_to_skip.csv)")
+        msg = f"Skipped {skipped_count} sequences from skip list (sequences_to_skip.csv)"
+        if logger:
+            logger.info(msg)
+        else:
+            print(msg)
     return keys
 
 
@@ -279,6 +357,7 @@ def downloader_thread(
     out_dir: str,           # Ex: "/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder"
     download_queue: Queue,  # Queue of DownloadedSequence objects
     total_keys: int,        # Ex: 100 (number of keys to process)
+    logger: logging.Logger, # Logger instance
 ) -> None:
     """Stage 1: Downloads sequences in 'keys' and puts them in the download_queue as a DownloadedSequence object.
 
@@ -289,7 +368,7 @@ def downloader_thread(
     """
     for idx, key in enumerate(keys, start=1): # Ex: '20230607_s0_james_johnson_act0_e72nhq'
         local_seq_dir = os.path.join(out_dir, key) # Ex: "/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq"
-        print(f"\n[Downloader] [{idx}/{total_keys}] Downloading: {key}")
+        logger.info(f"\n[Downloader] [{idx}/{total_keys}] Downloading: {key}")
 
         try:
             run_download(url_json_path, out_dir, key) # Downloads the nymeria sequence to the out_dir
@@ -297,22 +376,22 @@ def downloader_thread(
             if os.path.isdir(local_seq_dir):
                 # Put downloaded sequence in queue (blocks if queue is full)
                 download_queue.put(DownloadedSequence(key=key, local_seq_dir=local_seq_dir, idx=idx))
-                print(f"[Downloader] [{idx}/{total_keys}] Queued for processing: {key}")
+                logger.info(f"[Downloader] [{idx}/{total_keys}] Queued for processing: {key}")
             else:
-                print(f"[Downloader] [{idx}/{total_keys}] Directory not found after download: {local_seq_dir}")
-                add_sequence_to_skip(key, f"download failed: directory not created")
+                logger.error(f"[Downloader] [{idx}/{total_keys}] Directory not found after download: {local_seq_dir}")
+                add_sequence_to_skip(key, f"download failed: directory not created", logger)
                 try:
                     contents = os.listdir(out_dir)
-                    print(f"[Downloader] Current contents of {out_dir}: {contents[:20]}")
+                    logger.debug(f"[Downloader] Current contents of {out_dir}: {contents[:20]}")
                 except Exception:
                     pass
         except subprocess.CalledProcessError as e:
-            print(f"[Downloader] [{idx}/{total_keys}] Download failed for {key}: {e}")
-            add_sequence_to_skip(key, f"download failed: {e}")
+            logger.error(f"[Downloader] [{idx}/{total_keys}] Download failed for {key}: {e}")
+            add_sequence_to_skip(key, f"download failed: {e}", logger)
 
     # Signal that all downloads are complete, the thread will exit after these lines are executed.
     download_queue.put(DOWNLOAD_COMPLETE)
-    print("[Downloader] All downloads complete, exiting thread")
+    logger.info("[Downloader] All downloads complete, exiting thread")
 
 
 def processor_thread(
@@ -320,6 +399,7 @@ def processor_thread(
     upload_queue: Queue,
     args: 'DownloadUploadArgs',
     total_keys: int,
+    logger: logging.Logger,
 ) -> None:
     """Stage 2: Processes downloaded sequences into HDF5/MP4 files and queues them for upload.
 
@@ -329,8 +409,8 @@ def processor_thread(
     Takes DownloadedSequence objects from download_queue, processes them into HDF5/MP4 files
     using multiple worker processes, and puts ProcessedSequence objects into upload_queue.
     """
-    print("[Processor] PROCESSOR THREAD STARTED!", flush=True)
-    print(f"[Processor] Using {args.num_processing_workers} worker processes for multiprocessing", flush=True)
+    logger.info("[Processor] PROCESSOR THREAD STARTED!")
+    logger.info(f"[Processor] Using {args.num_processing_workers} worker processes for multiprocessing")
     out_dir = os.path.abspath(args.out_dir) # Ex: "/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder"
     processed_count = 0
 
@@ -338,7 +418,7 @@ def processor_thread(
         item: Optional[DownloadedSequence] = download_queue.get() # Queue.get() will block until an item is available in the queue.
 
         if item is DOWNLOAD_COMPLETE:
-            print("[Processor] Received download completion signal")
+            logger.info("[Processor] Received download completion signal")
             # Signal to uploader that no more sequences are coming
             upload_queue.put(PROCESSING_COMPLETE)
             break
@@ -347,9 +427,9 @@ def processor_thread(
         local_seq_dir = item.local_seq_dir  # Ex: "/home/ubuntu/sky_workdir/nymeria_dataset/temp-upload-folder/20230607_s0_james_johnson_act0_e72nhq"
         idx = item.idx                      # Ex: 1
 
-        print(f"\n{'='*80}")
-        print(f"[Processor] [{idx}/{total_keys}] Processing: {key} (with {args.num_processing_workers} workers)")
-        print(f"{'='*80}")
+        logger.info(f"\n{'='*80}")
+        logger.info(f"[Processor] [{idx}/{total_keys}] Processing: {key} (with {args.num_processing_workers} workers)")
+        logger.info(f"{'='*80}")
 
         try:
             # Use the multiprocessing version for faster processing
@@ -362,7 +442,7 @@ def processor_thread(
             )
             # Get corresponding MP4 files
             mp4_file_paths = [Path(str(h5_path).replace('.h5', '.mp4')) for h5_path in hdf5_file_paths]
-            print(f"[Processor] Processed into {len(hdf5_file_paths)} hdf5 + {len(mp4_file_paths)} mp4 files")
+            logger.info(f"[Processor] Processed into {len(hdf5_file_paths)} hdf5 + {len(mp4_file_paths)} mp4 files")
 
             # Queue for upload (blocks if upload_queue is full)
             upload_queue.put(ProcessedSequence(
@@ -372,24 +452,30 @@ def processor_thread(
                 mp4_file_paths=mp4_file_paths,
                 idx=idx,
             ))
-            print(f"[Processor] [{idx}/{total_keys}] Queued for upload: {key}", flush=True)
+            logger.info(f"[Processor] [{idx}/{total_keys}] Queued for upload: {key}")
             processed_count += 1
 
         except Exception as e:
-            print(f"[Processor] Extraction failed for {key}: {e}")
-            add_sequence_to_skip(key, f"processing failed: {e}")
+            logger.error(f"[Processor] Extraction failed for {key}: {e}", exc_info=True)
+            add_sequence_to_skip(key, f"processing failed: {e}", logger)
             # Clean up downloaded sequence on failure
             if os.path.isdir(local_seq_dir):
-                shutil.rmtree(local_seq_dir)
+                logger.info(f"[Processor] Cleaning up sequence directory after failure: {local_seq_dir}")
+                try:
+                    shutil.rmtree(local_seq_dir)
+                    logger.info(f"[Processor] Successfully deleted: {local_seq_dir}")
+                except Exception as cleanup_error:
+                    logger.error(f"[Processor] Failed to cleanup {local_seq_dir}: {cleanup_error}")
             continue
 
-    print(f"[Processor] Finished processing {processed_count} sequences, exiting thread")
+    logger.info(f"[Processor] Finished processing {processed_count} sequences, exiting thread")
 
 
 def uploader_thread(
     upload_queue: Queue,
     args: 'DownloadUploadArgs',
     total_keys: int,
+    logger: logging.Logger,
 ) -> None:
     """Stage 3: Uploads processed files to S3 and cleans up local files.
 
@@ -407,7 +493,7 @@ def uploader_thread(
         item: Optional[ProcessedSequence] = upload_queue.get() # Queue.get() will block until an item is available in the queue.
 
         if item is PROCESSING_COMPLETE:
-            print("[Uploader] Received processing completion signal, exiting")
+            logger.info("[Uploader] Received processing completion signal, exiting")
             break
 
         key = item.key
@@ -416,71 +502,91 @@ def uploader_thread(
         mp4_file_paths = item.mp4_file_paths
         idx = item.idx
 
-        print(f"[Uploader] [{idx}/{total_keys}] Uploading: {key}")
+        logger.info(f"[Uploader] [{idx}/{total_keys}] Uploading: {key}")
 
         # Upload HDF5 files
         for hdf5_path in hdf5_file_paths:
             s3_hdf5_path = f"{s3_prefix.rstrip('/')}/{Path(hdf5_path).name}" # Ex: "s3://far-research-internal/antzhan/nymeria/mp4/20230607_s0_james_johnson_act0_e72nhq_00000.h5"
             # only upload if the hdf5 file has a corresponding mp4 file
             if not os.path.exists(str(hdf5_path).replace('.h5', '.mp4')):
-                print(f"[Uploader] Skipping - HDF5 does not have a corresponding MP4: {hdf5_path}")
+                logger.warning(f"[Uploader] Skipping - HDF5 does not have a corresponding MP4: {hdf5_path}")
                 with open(os.path.join(out_dir, 'orphaned_hdf5_files.txt'), 'a') as f:
                     f.write(f"{hdf5_path}\n")
                 continue
             try:
                 run_s3_upload_file(str(hdf5_path), s3_hdf5_path, aws_profile, aws_region)
-                print(f"[Uploader] Uploaded HDF5 to {s3_hdf5_path}")
+                logger.debug(f"[Uploader] Uploaded HDF5 to {s3_hdf5_path}")
             except subprocess.CalledProcessError as e:
-                print(f"[Uploader] S3 upload failed for HDF5 {hdf5_path}: {e}")
+                logger.error(f"[Uploader] S3 upload failed for HDF5 {hdf5_path}: {e}")
 
         # Upload MP4 files
         for mp4_path in mp4_file_paths:
             # Check if MP4 file exists before uploading
             if not os.path.exists(mp4_path):
-                print(f"[Uploader] Skipping - MP4 does not exist: {mp4_path}")
+                logger.warning(f"[Uploader] Skipping - MP4 does not exist: {mp4_path}")
                 continue
 
             s3_mp4_path = f"{s3_prefix.rstrip('/')}/{Path(mp4_path).name}"
             try:
                 run_s3_upload_file(str(mp4_path), s3_mp4_path, aws_profile, aws_region)
-                print(f"[Uploader] Uploaded MP4 to {s3_mp4_path}")
+                logger.debug(f"[Uploader] Uploaded MP4 to {s3_mp4_path}")
             except subprocess.CalledProcessError as e:
-                print(f"[Uploader] S3 upload failed for MP4 {mp4_path}: {e}")
+                logger.error(f"[Uploader] S3 upload failed for MP4 {mp4_path}: {e}")
 
         # Clean up local files
-        print(f"[Uploader] [{idx}/{total_keys}] Cleaning up: {key}")
+        logger.info(f"[Uploader] [{idx}/{total_keys}] Cleaning up: {key}")
+        cleanup_errors = []
         try:
             # Delete sequence directory (raw downloaded data)
             if os.path.isdir(local_seq_dir):
                 shutil.rmtree(local_seq_dir)
-                print(f"[Uploader] Deleted sequence directory: {local_seq_dir}")
+                logger.info(f"[Uploader] Deleted sequence directory: {local_seq_dir}")
+            else:
+                logger.warning(f"[Uploader] Sequence directory does not exist (already deleted?): {local_seq_dir}")
+
             # Delete HDF5 files
             for hdf5_path in hdf5_file_paths:
                 if os.path.exists(hdf5_path):
-                    os.remove(hdf5_path)
-                    print(f"[Uploader] Deleted HDF5 file: {hdf5_path}")
+                    try:
+                        os.remove(hdf5_path)
+                        logger.debug(f"[Uploader] Deleted HDF5 file: {hdf5_path}")
+                    except Exception as e:
+                        cleanup_errors.append(f"HDF5 {hdf5_path}: {e}")
+                        logger.error(f"[Uploader] Failed to delete HDF5 {hdf5_path}: {e}")
+
             # Delete MP4 files
             for mp4_path in mp4_file_paths:
                 if os.path.exists(mp4_path):
-                    os.remove(mp4_path)
-                    print(f"[Uploader] Deleted MP4 file: {mp4_path}")
+                    try:
+                        os.remove(mp4_path)
+                        logger.debug(f"[Uploader] Deleted MP4 file: {mp4_path}")
+                    except Exception as e:
+                        cleanup_errors.append(f"MP4 {mp4_path}: {e}")
+                        logger.error(f"[Uploader] Failed to delete MP4 {mp4_path}: {e}")
         except Exception as e:
-            print(f"[Uploader] Cleanup warning for {key}: {e}")
+            logger.error(f"[Uploader] Cleanup error for {key}: {e}", exc_info=True)
+            cleanup_errors.append(f"General cleanup: {e}")
 
         # also delete data_summary.json and download_summary.json if they exist
         data_summary_path = os.path.join(out_dir, 'data_summary.json')
         download_summary_path = os.path.join(out_dir, 'download_summary.json')
-        if os.path.exists(data_summary_path):
-            os.remove(data_summary_path)
-            print(f"[Uploader] Deleted data_summary.json: {data_summary_path}")
-        if os.path.exists(download_summary_path):
-            os.remove(download_summary_path)
-            print(f"[Uploader] Deleted download_summary.json: {download_summary_path}")
+        try:
+            if os.path.exists(data_summary_path):
+                os.remove(data_summary_path)
+                logger.debug(f"[Uploader] Deleted data_summary.json: {data_summary_path}")
+            if os.path.exists(download_summary_path):
+                os.remove(download_summary_path)
+                logger.debug(f"[Uploader] Deleted download_summary.json: {download_summary_path}")
+        except Exception as e:
+            logger.error(f"[Uploader] Failed to delete summary files: {e}")
 
         uploaded_count += 1
-        print(f"[Uploader] [{idx}/{total_keys}] Completed: {key}", flush=True)
+        if cleanup_errors:
+            logger.warning(f"[Uploader] [{idx}/{total_keys}] Completed with {len(cleanup_errors)} cleanup errors: {key}")
+        else:
+            logger.info(f"[Uploader] [{idx}/{total_keys}] Completed successfully: {key}")
 
-    print(f"[Uploader] Finished uploading {uploaded_count} sequences")
+    logger.info(f"[Uploader] Finished uploading {uploaded_count} sequences")
 
 
 @dataclass
@@ -517,8 +623,9 @@ class DownloadUploadArgs:
     download_queue_size: int = 2
     """Max number of sequences to download ahead. Actual disk usage can be queue_size + 2 (includes current download and current processing)."""
 
-    upload_queue_size: int = 300
-    """Max number of atomic action chunks waiting to be uploaded."""
+    upload_queue_size: int = 5
+    """Max number of processed sequences waiting to be uploaded. Each sequence contains 100-200+ h5/mp4 file pairs.
+    WARNING: Setting this too high can leave many orphaned files if the script is terminated abruptly."""
 
     # Multiprocessing parameters for the processing stage
     num_processing_workers: int = 4
@@ -549,6 +656,9 @@ def main(args: DownloadUploadArgs) -> None:
     - While uploading sequence N-1, we can process sequence N and download sequence N+1
     - Processing is parallelized using multiprocessing for significant speedup
     """
+    # Set up logging first
+    logger = setup_logging()
+
     url_json_path = os.path.abspath(args.url_json)
     out_dir = os.path.abspath(args.out_dir)
     s3_prefix = args.s3_prefix
@@ -560,35 +670,35 @@ def main(args: DownloadUploadArgs) -> None:
     os.makedirs(out_dir, exist_ok=True)
 
     # Load all sequence keys from JSON that have good data
-    all_keys = load_all_sequence_keys(url_json_path, only_with_narrations)
+    all_keys = load_all_sequence_keys(url_json_path, only_with_narrations, logger)
     if not all_keys:
-        print("No sequences found in the provided JSON.")
+        logger.error("No sequences found in the provided JSON.")
         sys.exit(1)
-    print(f"Found {len(all_keys)} total sequences in JSON that have good data.")
+    logger.info(f"Found {len(all_keys)} total sequences in JSON that have good data.")
 
     # Get existing sequence keys from S3 to skip already-uploaded sequences
-    print("Checking S3 for existing sequences...")
+    logger.info("Checking S3 for existing sequences...")
     existing_keys = get_existing_sequence_keys_from_s3(s3_prefix, aws_profile, aws_region)
-    print(f"Found {len(existing_keys)} existing sequences in S3.")
+    logger.info(f"Found {len(existing_keys)} existing sequences in S3.")
 
     # Filter out sequences already in S3, then apply limit
     keys_to_process = [k for k in all_keys if k not in existing_keys] # keys_to_process is a list of all new sequences to process.
-    print(f"Remaining sequences to process: {len(keys_to_process)}")
+    logger.info(f"Remaining sequences to process: {len(keys_to_process)}")
     if limit != -1:
         keys = keys_to_process[:limit]
-        print(f"Applying limit={limit}: will process {len(keys)} sequences")
+        logger.info(f"Applying limit={limit}: will process {len(keys)} sequences")
     else:
         keys = keys_to_process
     if not keys:
-        print("No new sequences to process (all already in S3).")
+        logger.info("No new sequences to process (all already in S3).")
         sys.exit(0)
 
-    print(f"\nWill process {len(keys)} sequences.")
-    print(f"Temp directory: {out_dir}")
-    print(f"S3 destination: {s3_prefix}")
-    print(f"Extraction params: all datapoints @ {args.frame_rate}fps")
-    print(f"Pipeline queues: download={args.download_queue_size}, upload={args.upload_queue_size}")
-    print(f"Processing workers: {args.num_processing_workers} (multiprocessing)\n")
+    logger.info(f"\nWill process {len(keys)} sequences.")
+    logger.info(f"Temp directory: {out_dir}")
+    logger.info(f"S3 destination: {s3_prefix}")
+    logger.info(f"Extraction params: all datapoints @ {args.frame_rate}fps")
+    logger.info(f"Pipeline queues: download={args.download_queue_size} sequences, upload={args.upload_queue_size} sequences")
+    logger.info(f"Processing workers: {args.num_processing_workers} (multiprocessing)\n")
 
     # Create queues for the 3-stage pipeline
     download_queue: Queue[Optional[DownloadedSequence]] = Queue(maxsize=args.download_queue_size)
@@ -597,29 +707,29 @@ def main(args: DownloadUploadArgs) -> None:
     # Create threads for each stage
     downloader = threading.Thread(
         target=downloader_thread,
-        args=(keys, url_json_path, out_dir, download_queue, len(keys)),
+        args=(keys, url_json_path, out_dir, download_queue, len(keys), logger),
         daemon=True,
         name="DownloaderThread"
     )
 
     processor = threading.Thread(
         target=processor_thread,
-        args=(download_queue, upload_queue, args, len(keys)),
+        args=(download_queue, upload_queue, args, len(keys), logger),
         daemon=True,
         name="ProcessorThread"
     )
 
     uploader = threading.Thread(
         target=uploader_thread,
-        args=(upload_queue, args, len(keys)),
+        args=(upload_queue, args, len(keys), logger),
         daemon=True,
         name="UploaderThread"
     )
 
-    print("Starting 3-stage pipeline with MULTIPROCESSING...")
-    print("   [Stage 1 - Downloader] downloads raw sequence data")
-    print(f"   [Stage 2 - Processor]  extracts to hdf5 + mp4 ({args.num_processing_workers} parallel workers)")
-    print("   [Stage 3 - Uploader]   uploads to S3 and cleans up\n")
+    logger.info("Starting 3-stage pipeline with MULTIPROCESSING...")
+    logger.info("   [Stage 1 - Downloader] downloads raw sequence data")
+    logger.info(f"   [Stage 2 - Processor]  extracts to hdf5 + mp4 ({args.num_processing_workers} parallel workers)")
+    logger.info("   [Stage 3 - Uploader]   uploads to S3 and cleans up\n")
 
     # Start all threads
     downloader.start()
@@ -634,13 +744,13 @@ def main(args: DownloadUploadArgs) -> None:
     processor.join(timeout=5.0)
 
     if downloader.is_alive():
-        print("Warning: Downloader thread did not exit cleanly")
+        logger.warning("Warning: Downloader thread did not exit cleanly")
     if processor.is_alive():
-        print("Warning: Processor thread did not exit cleanly")
+        logger.warning("Warning: Processor thread did not exit cleanly")
 
-    print(f"\n{'='*80}")
-    print(f"Pipeline complete!")
-    print(f"{'='*80}")
+    logger.info(f"\n{'='*80}")
+    logger.info(f"Pipeline complete!")
+    logger.info(f"{'='*80}")
 
 
 if __name__ == "__main__":
