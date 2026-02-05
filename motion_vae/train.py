@@ -2,28 +2,30 @@
 Training script for Motion VAE.
 
 Implements the EgoTwin-style grouped loss function and training loop.
+
+Usage:
+    python -m motion_vae.train --data-dir /path/to/nymeria/hdf5
+    python -m motion_vae.train --data-dir /path --train.batch-size 16 --model.latent-dim 512
+    python -m motion_vae.train --help
 """
 
-import argparse
 import os
+from dataclasses import asdict
 from pathlib import Path
 from typing import Optional
 
 import torch
-import torch.nn as nn
 from torch import Tensor
 from torch.utils.data import DataLoader
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+import tyro
+import wandb
 
-from .config import MotionVAEConfig, MotionVAETrainingConfig
+from .config import MotionVAEConfig, MotionVAETrainingConfig, TrainArgs
 from .vae_model import MotionVAE
 from .motion_preprocessing import get_feature_slices
-
-# Import Nymeria dataset components
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from nymeria.nymeria_dataloader import NymeriaDataset, nymeria_collate_fn
+from .motion_dataloader import MotionOnlyDataset, motion_collate_fn
 
 
 def compute_reconstruction_loss(
@@ -156,6 +158,7 @@ class MotionVAETrainer:
         train_dataloader: DataLoader,
         val_dataloader: Optional[DataLoader] = None,
         device: torch.device = torch.device('cuda'),
+        use_wandb: bool = False,
     ):
         self.model = model.to(device)
         self.config = config
@@ -163,6 +166,7 @@ class MotionVAETrainer:
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
         self.device = device
+        self.use_wandb = use_wandb
 
         # Optimizer
         self.optimizer = AdamW(
@@ -220,7 +224,7 @@ class MotionVAETrainer:
         losses['total'].backward()
 
         # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(
+        grad_norm = torch.nn.utils.clip_grad_norm_(
             self.model.parameters(),
             self.train_config.gradient_clip,
         )
@@ -230,7 +234,9 @@ class MotionVAETrainer:
 
         self.global_step += 1
 
-        return {k: v.item() for k, v in losses.items()}
+        loss_dict = {k: v.item() for k, v in losses.items()}
+        loss_dict['grad_norm'] = grad_norm.item()
+        return loss_dict
 
     @torch.no_grad()
     def eval_step(self, batch) -> dict[str, float]:
@@ -293,6 +299,14 @@ class MotionVAETrainer:
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.global_step = checkpoint['global_step']
 
+    def _log(self, metrics: dict[str, float], prefix: str = "train"):
+        """Log metrics to wandb if enabled."""
+        if self.use_wandb:
+            wandb.log(
+                {f"{prefix}/{k}": v for k, v in metrics.items()},
+                step=self.global_step,
+            )
+
     def train(self):
         """Main training loop."""
         print(f"Starting training for {self.train_config.num_epochs} epochs")
@@ -317,6 +331,7 @@ class MotionVAETrainer:
                           f"Rec: {losses['rec_total']:.4f} | "
                           f"KL: {losses['kl']:.6f} | "
                           f"LR: {lr:.2e}")
+                    self._log({**losses, 'lr': lr}, prefix="train")
 
                 # Validation
                 if self.global_step % self.train_config.eval_interval == 0 and self.val_dataloader is not None:
@@ -325,6 +340,7 @@ class MotionVAETrainer:
                           f"Loss: {val_losses['total']:.4f} | "
                           f"Rec: {val_losses['rec_total']:.4f} | "
                           f"KL: {val_losses['kl']:.6f}")
+                    self._log(val_losses, prefix="val")
 
                     # Save best model
                     if val_losses['total'] < self.best_val_loss:
@@ -346,6 +362,7 @@ class MotionVAETrainer:
                   f"Avg Loss: {avg_losses['total']:.4f} | "
                   f"Avg Rec: {avg_losses['rec_total']:.4f} | "
                   f"Avg KL: {avg_losses['kl']:.6f}")
+            self._log(avg_losses, prefix="epoch")
 
         # Save final checkpoint
         self.save_checkpoint(
@@ -359,23 +376,25 @@ def create_dataloaders(
     batch_size: int,
     sequence_length: int = 152,
     num_workers: int = 4,
-    image_resolution: Optional[int] = None,
     val_split: float = 0.1,
+    seed: int = 42,
 ):
     """Create training and validation dataloaders.
+
+    Uses MotionOnlyDataset which skips video decoding for fast loading.
 
     Args:
         data_dir: Path to Nymeria HDF5 data directory
         batch_size: Batch size
         sequence_length: Sequence length (must be divisible by 4)
         num_workers: Number of dataloader workers
-        image_resolution: Optional image resolution (None to disable video loading)
         val_split: Fraction of data to use for validation
+        seed: Random seed for train/val split
 
     Returns:
         train_dataloader, val_dataloader
     """
-    dataset = NymeriaDataset(data_dir, image_resolution=image_resolution)
+    dataset = MotionOnlyDataset(data_dir)
 
     # Split into train/val
     total_size = len(dataset)
@@ -384,11 +403,11 @@ def create_dataloaders(
 
     train_dataset, val_dataset = torch.utils.data.random_split(
         dataset, [train_size, val_size],
-        generator=torch.Generator().manual_seed(42),
+        generator=torch.Generator().manual_seed(seed),
     )
 
     # Create dataloaders
-    collate_fn = lambda batch: nymeria_collate_fn(batch, sequence_length=sequence_length)
+    collate_fn = lambda batch: motion_collate_fn(batch, sequence_length=sequence_length)
 
     train_dataloader = DataLoader(
         train_dataset,
@@ -398,6 +417,7 @@ def create_dataloaders(
         collate_fn=collate_fn,
         pin_memory=True,
         drop_last=True,
+        persistent_workers=num_workers > 0,
     )
 
     val_dataloader = DataLoader(
@@ -408,54 +428,52 @@ def create_dataloaders(
         collate_fn=collate_fn,
         pin_memory=True,
         drop_last=False,
+        persistent_workers=num_workers > 0,
     )
 
     return train_dataloader, val_dataloader
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train Motion VAE')
-    parser.add_argument('--data_dir', type=str, required=True, help='Path to Nymeria HDF5 data')
-    parser.add_argument('--checkpoint_dir', type=str, default='checkpoints', help='Checkpoint directory')
-    parser.add_argument('--batch_size', type=int, default=32, help='Batch size')
-    parser.add_argument('--num_epochs', type=int, default=100, help='Number of epochs')
-    parser.add_argument('--learning_rate', type=float, default=1e-4, help='Learning rate')
-    parser.add_argument('--sequence_length', type=int, default=152, help='Sequence length')
-    parser.add_argument('--num_workers', type=int, default=4, help='Number of dataloader workers')
-    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint to resume from')
-    args = parser.parse_args()
+    args = tyro.cli(TrainArgs)
 
-    # Configuration
-    config = MotionVAEConfig(sequence_length=args.sequence_length)
-    train_config = MotionVAETrainingConfig(
-        batch_size=args.batch_size,
-        num_epochs=args.num_epochs,
-        learning_rate=args.learning_rate,
-        checkpoint_dir=args.checkpoint_dir,
-    )
+    # Seed
+    torch.manual_seed(args.seed)
+
+    # Wandb
+    if args.wandb.enabled:
+        wandb.init(
+            project=args.wandb.project,
+            entity=args.wandb.entity,
+            name=args.wandb.run_name,
+            tags=list(args.wandb.tags),
+            config=asdict(args),
+        )
 
     # Create model
-    model = MotionVAE(config)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    model = MotionVAE(args.model)
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Model parameters: {num_params:,}")
 
-    # Create dataloaders
+    # Create dataloaders (motion-only, no video decoding)
     train_dataloader, val_dataloader = create_dataloaders(
         data_dir=args.data_dir,
-        batch_size=args.batch_size,
-        sequence_length=args.sequence_length,
+        batch_size=args.train.batch_size,
+        sequence_length=args.model.sequence_length,
         num_workers=args.num_workers,
-        image_resolution=64,  # Small resolution for faster loading (we don't use images)
+        seed=args.seed,
     )
 
     # Create trainer
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     trainer = MotionVAETrainer(
         model=model,
-        config=config,
-        train_config=train_config,
+        config=args.model,
+        train_config=args.train,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
         device=device,
+        use_wandb=args.wandb.enabled,
     )
 
     # Resume from checkpoint if specified
@@ -465,6 +483,9 @@ def main():
 
     # Train
     trainer.train()
+
+    if args.wandb.enabled:
+        wandb.finish()
 
 
 if __name__ == '__main__':

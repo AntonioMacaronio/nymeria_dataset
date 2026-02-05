@@ -6,7 +6,7 @@ The VAE encodes motion sequences into a compressed latent space using head-centr
 representation and 1D causal convolutions.
 """
 
-from .config import MotionVAEConfig, MotionVAETrainingConfig
+from .config import MotionVAEConfig, MotionVAETrainingConfig, WandbConfig, TrainArgs
 from .rotation_utils import (
     matrix_to_rotation_6d,
     rotation_6d_to_matrix,
@@ -16,6 +16,12 @@ from .motion_preprocessing import (
     HeadCentricMotion,
     NymeriaMotionPreprocessor,
     get_feature_slices,
+)
+from .motion_dataloader import (
+    MotionOnlySeq,
+    MotionOnlyDataset,
+    BatchedMotionSeq,
+    motion_collate_fn,
 )
 from .vae_model import (
     CausalConv1d,
