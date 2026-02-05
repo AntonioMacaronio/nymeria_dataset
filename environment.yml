@@ -36,3 +36,4 @@ dependencies:
   - tyro
   - viser
   - pandas
+  - wandb
