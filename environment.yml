@@ -37,3 +37,4 @@ dependencies:
   - viser
   - pandas
   - wandb
+  - accelerate
