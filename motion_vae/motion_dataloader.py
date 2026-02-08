@@ -132,6 +132,15 @@ class BatchedMotionSeq:
         self.joint_translation = torch.from_numpy(joint_translation_np)
         self.joint_orientation = torch.from_numpy(joint_orientation_np)
 
+    def to(self, device: torch.device) -> 'BatchedMotionSeq':
+        """Move all tensors to the given device. Returns self for chaining."""
+        self.padding_mask = self.padding_mask.to(device)
+        self.cpf_translation = self.cpf_translation.to(device)
+        self.cpf_orientation = self.cpf_orientation.to(device)
+        self.joint_translation = self.joint_translation.to(device)
+        self.joint_orientation = self.joint_orientation.to(device)
+        return self
+
 
 def motion_collate_fn(
     batch: list[MotionOnlySeq],

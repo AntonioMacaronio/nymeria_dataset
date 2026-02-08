@@ -2,9 +2,15 @@
 Training script for Motion VAE.
 
 Implements the EgoTwin-style grouped loss function and training loop.
+Supports multi-GPU training via HuggingFace Accelerate.
 
-Usage:
+Usage (single GPU):
     python -m motion_vae.train --data-dir /path/to/nymeria/hdf5
+
+Usage (multi-GPU):
+    accelerate launch -m motion_vae.train --data-dir /path/to/nymeria/hdf5
+
+Options:
     python -m motion_vae.train --data-dir /path --train.batch-size 16 --model.latent-dim 512
     python -m motion_vae.train --help
 """
@@ -21,6 +27,7 @@ from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 import tyro
 import wandb
+from accelerate import Accelerator
 
 from .config import MotionVAEConfig, MotionVAETrainingConfig, TrainArgs
 from .vae_model import MotionVAE
@@ -157,19 +164,19 @@ class MotionVAETrainer:
         train_config: MotionVAETrainingConfig,
         train_dataloader: DataLoader,
         val_dataloader: Optional[DataLoader] = None,
-        device: torch.device = torch.device('cuda'),
+        accelerator: Optional[Accelerator] = None,
         use_wandb: bool = False,
     ):
-        self.model = model.to(device)
         self.config = config
         self.train_config = train_config
-        self.train_dataloader = train_dataloader
-        self.val_dataloader = val_dataloader
-        self.device = device
         self.use_wandb = use_wandb
 
+        # Set up accelerator (handles multi-GPU via DDP, mixed precision, etc.)
+        self.accelerator = accelerator or Accelerator()
+        self.device = self.accelerator.device
+
         # Optimizer
-        self.optimizer = AdamW(
+        optimizer = AdamW(
             model.parameters(),
             lr=train_config.learning_rate,
             weight_decay=train_config.weight_decay,
@@ -179,39 +186,45 @@ class MotionVAETrainer:
         # Learning rate scheduler with warmup
         num_training_steps = len(train_dataloader) * train_config.num_epochs
         warmup_scheduler = LinearLR(
-            self.optimizer,
+            optimizer,
             start_factor=0.01,
             end_factor=1.0,
             total_iters=train_config.warmup_steps,
         )
         cosine_scheduler = CosineAnnealingLR(
-            self.optimizer,
+            optimizer,
             T_max=num_training_steps - train_config.warmup_steps,
             eta_min=train_config.learning_rate * 0.01,
         )
-        self.scheduler = SequentialLR(
-            self.optimizer,
+        scheduler = SequentialLR(
+            optimizer,
             schedulers=[warmup_scheduler, cosine_scheduler],
             milestones=[train_config.warmup_steps],
         )
+
+        # Prepare model, optimizer, dataloaders, and scheduler with accelerate
+        self.model, self.optimizer, self.train_dataloader, self.scheduler = (
+            self.accelerator.prepare(model, optimizer, train_dataloader, scheduler)
+        )
+        if val_dataloader is not None:
+            self.val_dataloader = self.accelerator.prepare(val_dataloader)
+        else:
+            self.val_dataloader = None
 
         # Tracking
         self.global_step = 0
         self.best_val_loss = float('inf')
 
-        # Create checkpoint directory
-        os.makedirs(train_config.checkpoint_dir, exist_ok=True)
+        # Create checkpoint directory (main process only)
+        if self.accelerator.is_main_process:
+            os.makedirs(train_config.checkpoint_dir, exist_ok=True)
 
     def train_step(self, batch) -> dict[str, float]:
         """Single training step."""
         self.model.train()
 
-        # Move batch to device
-        batch.cpf_translation = batch.cpf_translation.to(self.device)
-        batch.cpf_orientation = batch.cpf_orientation.to(self.device)
-        batch.joint_translation = batch.joint_translation.to(self.device)
-        batch.joint_orientation = batch.joint_orientation.to(self.device)
-        batch.padding_mask = batch.padding_mask.to(self.device)
+        # Move batch to device (custom batch type, not auto-handled by accelerate)
+        batch.to(self.device)
 
         # Forward pass
         output = self.model(batch)
@@ -219,12 +232,12 @@ class MotionVAETrainer:
         # Compute loss
         losses = compute_vae_loss(output, self.config)
 
-        # Backward pass
+        # Backward pass (accelerate handles gradient scaling for mixed precision)
         self.optimizer.zero_grad()
-        losses['total'].backward()
+        self.accelerator.backward(losses['total'])
 
-        # Gradient clipping
-        grad_norm = torch.nn.utils.clip_grad_norm_(
+        # Gradient clipping (use accelerator to unscale gradients first if needed)
+        self.accelerator.clip_grad_norm_(
             self.model.parameters(),
             self.train_config.gradient_clip,
         )
@@ -235,7 +248,6 @@ class MotionVAETrainer:
         self.global_step += 1
 
         loss_dict = {k: v.item() for k, v in losses.items()}
-        loss_dict['grad_norm'] = grad_norm.item()
         return loss_dict
 
     @torch.no_grad()
@@ -243,12 +255,8 @@ class MotionVAETrainer:
         """Single evaluation step."""
         self.model.eval()
 
-        # Move batch to device
-        batch.cpf_translation = batch.cpf_translation.to(self.device)
-        batch.cpf_orientation = batch.cpf_orientation.to(self.device)
-        batch.joint_translation = batch.joint_translation.to(self.device)
-        batch.joint_orientation = batch.joint_orientation.to(self.device)
-        batch.padding_mask = batch.padding_mask.to(self.device)
+        # Move batch to device (custom batch type, not auto-handled by accelerate)
+        batch.to(self.device)
 
         # Forward pass
         output = self.model(batch)
@@ -276,9 +284,14 @@ class MotionVAETrainer:
         return {k: v / num_batches for k, v in total_losses.items()}
 
     def save_checkpoint(self, path: str, is_best: bool = False):
-        """Save model checkpoint."""
+        """Save model checkpoint (only on main process)."""
+        if not self.accelerator.is_main_process:
+            return
+
+        # Unwrap model from DDP/accelerate wrapper to get raw state_dict
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
         checkpoint = {
-            'model_state_dict': self.model.state_dict(),
+            'model_state_dict': unwrapped_model.state_dict(),
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'global_step': self.global_step,
@@ -294,7 +307,8 @@ class MotionVAETrainer:
     def load_checkpoint(self, path: str):
         """Load model checkpoint."""
         checkpoint = torch.load(path, map_location=self.device)
-        self.model.load_state_dict(checkpoint['model_state_dict'])
+        unwrapped_model = self.accelerator.unwrap_model(self.model)
+        unwrapped_model.load_state_dict(checkpoint['model_state_dict'])
         self.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         self.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         self.global_step = checkpoint['global_step']
@@ -309,8 +323,10 @@ class MotionVAETrainer:
 
     def train(self):
         """Main training loop."""
-        print(f"Starting training for {self.train_config.num_epochs} epochs")
-        print(f"Total steps: {len(self.train_dataloader) * self.train_config.num_epochs}")
+        if self.accelerator.is_main_process:
+            print(f"Starting training for {self.train_config.num_epochs} epochs")
+            print(f"Total steps: {len(self.train_dataloader) * self.train_config.num_epochs}")
+            print(f"Number of processes: {self.accelerator.num_processes}")
 
         for epoch in range(self.train_config.num_epochs):
             epoch_losses = {}
@@ -323,8 +339,8 @@ class MotionVAETrainer:
                     epoch_losses[k] = epoch_losses.get(k, 0.0) + v
                 num_batches += 1
 
-                # Logging
-                if self.global_step % self.train_config.log_interval == 0:
+                # Logging (main process only)
+                if self.global_step % self.train_config.log_interval == 0 and self.accelerator.is_main_process:
                     lr = self.scheduler.get_last_lr()[0]
                     print(f"Step {self.global_step} | "
                           f"Loss: {losses['total']:.4f} | "
@@ -336,19 +352,20 @@ class MotionVAETrainer:
                 # Validation
                 if self.global_step % self.train_config.eval_interval == 0 and self.val_dataloader is not None:
                     val_losses = self.validate()
-                    print(f"Validation | "
-                          f"Loss: {val_losses['total']:.4f} | "
-                          f"Rec: {val_losses['rec_total']:.4f} | "
-                          f"KL: {val_losses['kl']:.6f}")
-                    self._log(val_losses, prefix="val")
+                    if self.accelerator.is_main_process:
+                        print(f"Validation | "
+                              f"Loss: {val_losses['total']:.4f} | "
+                              f"Rec: {val_losses['rec_total']:.4f} | "
+                              f"KL: {val_losses['kl']:.6f}")
+                        self._log(val_losses, prefix="val")
 
-                    # Save best model
-                    if val_losses['total'] < self.best_val_loss:
-                        self.best_val_loss = val_losses['total']
-                        self.save_checkpoint(
-                            os.path.join(self.train_config.checkpoint_dir, 'checkpoint.pt'),
-                            is_best=True,
-                        )
+                        # Save best model
+                        if val_losses['total'] < self.best_val_loss:
+                            self.best_val_loss = val_losses['total']
+                            self.save_checkpoint(
+                                os.path.join(self.train_config.checkpoint_dir, 'checkpoint.pt'),
+                                is_best=True,
+                            )
 
                 # Save checkpoint
                 if self.global_step % self.train_config.save_interval == 0:
@@ -357,18 +374,20 @@ class MotionVAETrainer:
                     )
 
             # End of epoch logging
-            avg_losses = {k: v / num_batches for k, v in epoch_losses.items()}
-            print(f"Epoch {epoch+1}/{self.train_config.num_epochs} | "
-                  f"Avg Loss: {avg_losses['total']:.4f} | "
-                  f"Avg Rec: {avg_losses['rec_total']:.4f} | "
-                  f"Avg KL: {avg_losses['kl']:.6f}")
-            self._log(avg_losses, prefix="epoch")
+            if self.accelerator.is_main_process:
+                avg_losses = {k: v / num_batches for k, v in epoch_losses.items()}
+                print(f"Epoch {epoch+1}/{self.train_config.num_epochs} | "
+                      f"Avg Loss: {avg_losses['total']:.4f} | "
+                      f"Avg Rec: {avg_losses['rec_total']:.4f} | "
+                      f"Avg KL: {avg_losses['kl']:.6f}")
+                self._log(avg_losses, prefix="epoch")
 
         # Save final checkpoint
         self.save_checkpoint(
             os.path.join(self.train_config.checkpoint_dir, 'checkpoint_final.pt'),
         )
-        print("Training complete!")
+        if self.accelerator.is_main_process:
+            print("Training complete!")
 
 
 def create_dataloaders(
@@ -437,11 +456,14 @@ def create_dataloaders(
 def main():
     args = tyro.cli(TrainArgs)
 
+    # Create accelerator for multi-GPU training
+    accelerator = Accelerator()
+
     # Seed
     torch.manual_seed(args.seed)
 
-    # Wandb
-    if args.wandb.enabled:
+    # Wandb (only init on main process)
+    if args.wandb.enabled and accelerator.is_main_process:
         wandb.init(
             project=args.wandb.project,
             entity=args.wandb.entity,
@@ -452,8 +474,9 @@ def main():
 
     # Create model
     model = MotionVAE(args.model)
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"Model parameters: {num_params:,}")
+    if accelerator.is_main_process:
+        num_params = sum(p.numel() for p in model.parameters())
+        print(f"Model parameters: {num_params:,}")
 
     # Create dataloaders (motion-only, no video decoding)
     train_dataloader, val_dataloader = create_dataloaders(
@@ -464,27 +487,27 @@ def main():
         seed=args.seed,
     )
 
-    # Create trainer
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # Create trainer (accelerator handles device placement and DDP wrapping)
     trainer = MotionVAETrainer(
         model=model,
         config=args.model,
         train_config=args.train,
         train_dataloader=train_dataloader,
         val_dataloader=val_dataloader,
-        device=device,
+        accelerator=accelerator,
         use_wandb=args.wandb.enabled,
     )
 
     # Resume from checkpoint if specified
     if args.resume:
         trainer.load_checkpoint(args.resume)
-        print(f"Resumed from {args.resume} at step {trainer.global_step}")
+        if accelerator.is_main_process:
+            print(f"Resumed from {args.resume} at step {trainer.global_step}")
 
     # Train
     trainer.train()
 
-    if args.wandb.enabled:
+    if args.wandb.enabled and accelerator.is_main_process:
         wandb.finish()
 
 
