@@ -25,10 +25,34 @@ output = model(x, preprocess=False)
 ### Training
 
 ```bash
-python -m motion_vae.train --data_dir /path/to/nymeria/hdf5 --batch_size 32
+python find_orphaned_hdf5_nvme.py # first run this to clean up any bad data (hdf5 files without corresponding mp4 files)
+
+# Single GPU
+python -m motion_vae.train --data-dir /path/to/nymeria/hdf5
+
+# Multi-GPU (uses HuggingFace Accelerate)
+accelerate launch -m motion_vae.train --data-dir /path/to/nymeria/hdf5
 ```
 
-> **Note:** This module uses relative imports and must be run as a package (`python -m motion_vae.train`), not as a script (`python motion_vae/train.py`).
+Key flags (see `python -m motion_vae.train --help` for all options):
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--data-dir` | *(required)* | Path to directory containing Nymeria HDF5 files |
+| `--train.batch-size` | 32 | Batch size per GPU |
+| `--train.num-epochs` | 100 | Number of training epochs |
+| `--train.learning-rate` | 1e-4 | AdamW learning rate |
+| `--model.latent-dim` | 768 | Latent space dimension |
+| `--model.sequence-length` | 152 | Sequence length (must be divisible by 4) |
+| `--num-workers` | 4 | Dataloader worker processes |
+| `--resume` | None | Path to checkpoint to resume from |
+| `--wandb.enabled` | True | Enable Weights & Biases logging |
+| `--wandb.project` | `motion-vae` | W&B project name |
+| `--seed` | 42 | Random seed |
+
+> **Note:** This module uses relative imports and must be run as a package (`python -m motion_vae.train` or `accelerate launch -m motion_vae.train`), not as a script (`python motion_vae/train.py`).
+
+> **Multi-GPU:** The `batch-size` is **per GPU**. Accelerate automatically shards the dataloader across processes. Run `accelerate config` beforehand to set the number of GPUs, mixed precision (fp16/bf16), etc.
 
 ## Architecture
 
