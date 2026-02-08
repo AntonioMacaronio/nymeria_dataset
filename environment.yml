@@ -38,3 +38,4 @@ dependencies:
   - pandas
   - wandb
   - accelerate
+  - nvitop # for monitoring GPU usage

@@ -52,7 +52,7 @@ Key flags (see `python -m motion_vae.train --help` for all options):
 
 > **Note:** This module uses relative imports and must be run as a package (`python -m motion_vae.train` or `accelerate launch -m motion_vae.train`), not as a script (`python motion_vae/train.py`).
 
-> **Multi-GPU:** The `batch-size` is **per GPU**. Accelerate automatically shards the dataloader across processes. Run `accelerate config` beforehand to set the number of GPUs, mixed precision (fp16/bf16), etc.
+> **Multi-GPU:** The `batch-size` is **per GPU**. Accelerate automatically shards the dataloader across processes and uses all visible GPUs by default. Pass `--num_processes N` to `accelerate launch` to limit to N GPUs.
 
 ## Architecture
 
