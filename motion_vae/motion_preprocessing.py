@@ -210,6 +210,41 @@ class NymeriaMotionPreprocessor:
         )
 
 
+    def process_tensors(
+        self,
+        cpf_translation: Tensor,
+        cpf_orientation: Tensor,
+        joint_translation: Tensor,
+        joint_orientation: Tensor,
+        padding_mask: Tensor = None,
+    ) -> HeadCentricMotion:
+        """Convert raw tensors to HeadCentricMotion (same logic as __call__ but with explicit tensors).
+
+        Args:
+            cpf_translation: (B, T, 3) head position
+            cpf_orientation: (B, T, 3, 3) head rotation matrix
+            joint_translation: (B, T, 23, 3) joint positions
+            joint_orientation: (B, T, 23, 3, 3) joint rotations
+            padding_mask: (B, T) valid frame mask (optional)
+
+        Returns:
+            HeadCentricMotion instance
+        """
+
+        class _TensorHolder:
+            pass
+
+        holder = _TensorHolder()
+        holder.cpf_translation = cpf_translation
+        holder.cpf_orientation = cpf_orientation
+        holder.joint_translation = joint_translation
+        holder.joint_orientation = joint_orientation
+        holder.padding_mask = padding_mask if padding_mask is not None else torch.ones(
+            cpf_translation.shape[:2], device=cpf_translation.device, dtype=cpf_translation.dtype
+        )
+        return self(holder)
+
+
 def get_feature_slices() -> dict:
     """Get feature slice indices for grouped loss computation.
 
