@@ -157,36 +157,56 @@ class MotionEncoder(nn.Module):
 
     def forward(self, x: Tensor) -> tuple[Tensor, Tensor]:
         """
+        Encode motion to latent space with temporal formula 1 + (T-1)//4.
+
+        The first frame is handled separately (passed through input_proj only)
+        to match the video VAE's temporal compression: lat_t = 1 + (T-1)//4.
+
         Args:
             x: Input tensor of shape (B, T, input_dim)
         Returns:
-            mean: Latent mean of shape (B, T//4, latent_dim)
-            logvar: Latent log variance of shape (B, T//4, latent_dim)
+            mean: Latent mean of shape (B, 1+(T-1)//4, latent_dim)
+            logvar: Latent log variance of shape (B, 1+(T-1)//4, latent_dim)
         """
         # Permute to (B, C, T) for causal conv operations
-        x = x.permute(0, 2, 1)
+        x = x.permute(0, 2, 1)  # (B, input_dim, T)
 
-        # Initial projection (1D causal convolution)
-        x = self.input_proj(x)
+        # Split first frame and rest
+        x_first = x[:, :, :1]   # (B, input_dim, 1)
+        x_rest = x[:, :, 1:]    # (B, input_dim, T-1)
 
-        # Stage 1
-        for block in self.stage1_blocks:
-            x = block(x)
-        x = self.downsample1(x)
-
-        # Stage 2
-        for block in self.stage2_blocks:
-            x = block(x)
-        x = self.downsample2(x)
-
-        # Final stage
+        # Process first frame: input_proj only, then output_proj
+        x_first = self.input_proj(x_first)  # (B, hidden_dim, 1)
         for block in self.final_blocks:
-            x = block(x)
+            x_first = block(x_first)
+        x_first = self.output_proj(x_first)  # (B, 2*latent_dim, 1)
 
-        # Output projection
-        x = self.output_proj(x)
+        # Process rest through full encoder with downsampling
+        if x_rest.shape[2] > 0:
+            x_rest = self.input_proj(x_rest)  # (B, hidden_dim, T-1)
 
-        # Permute back to (B, T//4, 2*latent_dim)
+            # Stage 1
+            for block in self.stage1_blocks:
+                x_rest = block(x_rest)
+            x_rest = self.downsample1(x_rest)  # (B, hidden_dim, (T-1)//2)
+
+            # Stage 2
+            for block in self.stage2_blocks:
+                x_rest = block(x_rest)
+            x_rest = self.downsample2(x_rest)  # (B, hidden_dim, (T-1)//4)
+
+            # Final stage
+            for block in self.final_blocks:
+                x_rest = block(x_rest)
+
+            x_rest = self.output_proj(x_rest)  # (B, 2*latent_dim, (T-1)//4)
+
+            # Concatenate: (B, 2*latent_dim, 1 + (T-1)//4)
+            x = torch.cat([x_first, x_rest], dim=2)
+        else:
+            x = x_first
+
+        # Permute back to (B, 1+(T-1)//4, 2*latent_dim)
         x = x.permute(0, 2, 1)
 
         # Split into mean and logvar
