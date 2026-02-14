@@ -254,33 +254,50 @@ class MotionDecoder(nn.Module):
 
     def forward(self, z: Tensor) -> Tensor:
         """
+        Decode latent to motion, mirroring encoder's 1 + (T-1)//4 temporal formula.
+
         Args:
-            z: Latent tensor of shape (B, T//4, latent_dim)
+            z: Latent tensor of shape (B, 1+(T-1)//4, latent_dim)
         Returns:
             Reconstructed motion of shape (B, T, input_dim)
         """
-        # Permute to (B, C, T//4) for conv operations
-        x = z.permute(0, 2, 1)
+        # Permute to (B, C, lat_t) for conv operations
+        x = z.permute(0, 2, 1)  # (B, latent_dim, lat_t)
 
-        # Initial projection
-        x = self.input_proj(x)
+        # Split first latent token and rest
+        x_first = x[:, :, :1]   # (B, latent_dim, 1)
+        x_rest = x[:, :, 1:]    # (B, latent_dim, (T-1)//4)
 
-        # Stage 1
-        for block in self.stage1_blocks:
-            x = block(x)
-        x = self.upsample1(x)
-
-        # Stage 2
-        for block in self.stage2_blocks:
-            x = block(x)
-        x = self.upsample2(x)
-
-        # Final stage
+        # Decode first token: input_proj + final_blocks + output_proj → 1 frame
+        x_first = self.input_proj(x_first)
         for block in self.final_blocks:
-            x = block(x)
+            x_first = block(x_first)
+        x_first = self.output_proj(x_first)  # (B, input_dim, 1)
 
-        # Output projection
-        x = self.output_proj(x)
+        # Decode rest through full decoder with upsampling
+        if x_rest.shape[2] > 0:
+            x_rest = self.input_proj(x_rest)  # (B, hidden_dim, (T-1)//4)
+
+            # Stage 1
+            for block in self.stage1_blocks:
+                x_rest = block(x_rest)
+            x_rest = self.upsample1(x_rest)  # (B, hidden_dim, (T-1)//2)
+
+            # Stage 2
+            for block in self.stage2_blocks:
+                x_rest = block(x_rest)
+            x_rest = self.upsample2(x_rest)  # (B, hidden_dim, T-1)
+
+            # Final stage
+            for block in self.final_blocks:
+                x_rest = block(x_rest)
+
+            x_rest = self.output_proj(x_rest)  # (B, input_dim, T-1)
+
+            # Concatenate: (B, input_dim, T)
+            x = torch.cat([x_first, x_rest], dim=2)
+        else:
+            x = x_first
 
         # Permute back to (B, T, input_dim)
         x = x.permute(0, 2, 1)
@@ -327,8 +344,8 @@ class MotionVAE(nn.Module):
             x: Motion tensor of shape (B, T, input_dim)
 
         Returns:
-            mean: Latent mean (B, T//4, latent_dim)
-            logvar: Latent log variance (B, T//4, latent_dim)
+            mean: Latent mean (B, 1+(T-1)//4, latent_dim)
+            logvar: Latent log variance (B, 1+(T-1)//4, latent_dim)
         """
         return self.encoder(x)
 
@@ -336,7 +353,7 @@ class MotionVAE(nn.Module):
         """Decode latent to motion.
 
         Args:
-            z: Latent tensor of shape (B, T//4, latent_dim)
+            z: Latent tensor of shape (B, 1+(T-1)//4, latent_dim)
 
         Returns:
             Reconstructed motion (B, T, input_dim)
@@ -355,9 +372,9 @@ class MotionVAE(nn.Module):
             Dictionary containing:
                 - recon: Reconstructed motion (B, T, input_dim)
                 - target: Original motion (B, T, input_dim)
-                - mean: Latent mean (B, T//4, latent_dim)
-                - logvar: Latent log variance (B, T//4, latent_dim)
-                - z: Sampled latent (B, T//4, latent_dim)
+                - mean: Latent mean (B, 1+(T-1)//4, latent_dim)
+                - logvar: Latent log variance (B, 1+(T-1)//4, latent_dim)
+                - z: Sampled latent (B, 1+(T-1)//4, latent_dim)
                 - padding_mask: Optional padding mask (B, T)
         """
         if preprocess:
@@ -397,6 +414,6 @@ class MotionVAE(nn.Module):
         Returns:
             Generated motion sequences (num_samples, seq_length, input_dim)
         """
-        latent_length = seq_length // 4
+        latent_length = 1 + (seq_length - 1) // 4
         z = torch.randn(num_samples, latent_length, self.config.latent_dim, device=device)
         return self.decode(z)
